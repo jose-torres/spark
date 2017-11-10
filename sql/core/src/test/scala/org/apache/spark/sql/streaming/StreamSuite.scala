@@ -713,8 +713,12 @@ class StreamSuite extends StreamTest {
         query.awaitTermination()
       }
 
-      assert(e.getMessage.contains(providerClassName))
-      assert(e.getMessage.contains("instantiated"))
+      // In data source V1, the exception we receive will directly contain the failure. In V2,
+      // it'll be wrapped in a query terminated exception wrapped in a writer aborted exception.
+      assert(e.getMessage.contains(providerClassName) ||
+        e.getCause.getCause.getMessage.contains(providerClassName))
+      assert(e.getMessage.contains("instantiated") ||
+        e.getCause.getCause.getMessage.contains("instantiated"))
     }
   }
 

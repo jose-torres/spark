@@ -18,13 +18,14 @@
 package org.apache.spark.sql.execution.streaming
 
 import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.sources.v2.BaseStreamingSink
 
 /**
  * An interface for systems that can collect the results of a streaming query. In order to preserve
  * exactly once semantics a sink must be idempotent in the face of multiple attempts to add the same
  * batch.
  */
-trait Sink {
+trait Sink extends BaseStreamingSink {
 
   /**
    * Adds a batch of data to this sink. The data for a given `batchId` is deterministic and if

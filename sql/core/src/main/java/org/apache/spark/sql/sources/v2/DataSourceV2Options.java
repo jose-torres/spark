@@ -36,6 +36,10 @@ public class DataSourceV2Options {
     return key.toLowerCase(Locale.ROOT);
   }
 
+  public static DataSourceV2Options empty() {
+    return new DataSourceV2Options(new HashMap<String, String>());
+  }
+
   public DataSourceV2Options(Map<String, String> originalMap) {
     keyLowerCasedMap = new HashMap<>(originalMap.size());
     for (Map.Entry<String, String> entry : originalMap.entrySet()) {

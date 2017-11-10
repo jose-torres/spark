@@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeMap, Curre
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.execution.command.StreamingExplainCommand
+import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, WriteToDataSourceV2}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming._
 import org.apache.spark.util.{Clock, UninterruptibleThread, Utils}
@@ -677,6 +678,21 @@ class StreamExecution(
       }
     }
 
+    val newReaders: Map[ReadMicroBatchSupport, DataSourceV2Reader] = reportTimeTaken("getBatch") {
+      availableOffsets.flatMap {
+        case (source: ReadMicroBatchSupport, available)
+          if committedOffsets.get(source).map(_ != available).getOrElse(true) =>
+          val current = committedOffsets.get(source)
+          val reader = source.createReader(
+            java.util.Optional.ofNullable(current.orNull),
+            available,
+            DataSourceV2Options.empty())
+          logDebug(s"Retrieving data from $source: $current -> $available")
+          Some(source -> reader)
+        case _ => None
+      }
+    }
+
     // A list of attributes that will need to be updated.
     val replacements = new ArrayBuffer[(Attribute, Attribute)]
     // Replace sources in the logical plan with data that has arrived since the last batch.
@@ -707,10 +723,23 @@ class StreamExecution(
           cd.dataType, cd.timeZoneId)
     }
 
+    // In data source V2, also append the sink. (In V1 the sink doesn't participate in the plan.)
+    val withPossibleV2Sink = sink match {
+      case s: WriteSupport =>
+        val writer = s.createWriter(
+          s"$runId:$currentBatchId",
+          withNewSources.schema,
+          SaveMode.Append,
+          DataSourceV2Options.empty())
+        WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
+      case s: Sink => triggerLogicalPlan
+      case _ => throw new IllegalArgumentException("unknown sink type")
+    }
+
     reportTimeTaken("queryPlanning") {
       lastExecution = new IncrementalExecution(
         sparkSessionToRunBatch,
-        triggerLogicalPlan,
+        withPossibleV2Sink,
         outputMode,
         checkpointFile("state"),
         runId,
@@ -724,7 +753,12 @@ class StreamExecution(
 
     reportTimeTaken("addBatch") {
       SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution) {
-        sink.addBatch(currentBatchId, nextBatch)
+        sink match {
+          case s: Sink => s.addBatch(currentBatchId, nextBatch)
+          case s: WriteSupport =>
+            // Execute the V2 writer node in the query plan.
+            nextBatch.collect()
+        }
       }
     }
 
