@@ -12,7 +12,7 @@ import org.apache.spark.sql.types.StructType;
  * provide data writing ability and save the data from a microbatch to the data source.
  */
 @InterfaceStability.Evolving
-public interface WriteMicroBatchSupport {
+public interface WriteMicroBatchSupport extends BaseStreamingSink {
 
   /**
    * Creates an optional {@link DataSourceV2Writer} to save the data to this data source. Data

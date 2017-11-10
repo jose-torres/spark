@@ -180,8 +180,7 @@ class MemoryStreamDataReader[A: Encoder](data: Seq[A]) extends DataReader[Row] {
  * A sink that stores the results in memory. This [[Sink]] is primarily intended for use in unit
  * tests and does not provide durability.
  */
-class MemorySinkV2 extends DataSourceV2
-  with WriteMicroBatchSupport with Logging with BaseStreamingSink {
+class MemorySinkV2 extends DataSourceV2 with WriteMicroBatchSupport with Logging {
 
   override def createWriter(
       queryId: String,
@@ -298,4 +297,3 @@ case class MemoryPlanV2(sink: MemorySinkV2, override val output: Seq[Attribute])
 
   override def computeStats(): Statistics = Statistics(sizePerRow * sink.allData.size)
 }
-
