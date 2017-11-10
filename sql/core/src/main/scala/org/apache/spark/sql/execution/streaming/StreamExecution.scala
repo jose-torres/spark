@@ -40,6 +40,8 @@ import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.execution.command.StreamingExplainCommand
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, WriteToDataSourceV2}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.sources.v2._
+import org.apache.spark.sql.sources.v2.reader.DataSourceV2Reader
 import org.apache.spark.sql.streaming._
 import org.apache.spark.util.{Clock, UninterruptibleThread, Utils}
 
@@ -725,14 +727,15 @@ class StreamExecution(
 
     // In data source V2, also append the sink. (In V1 the sink doesn't participate in the plan.)
     val withPossibleV2Sink = sink match {
-      case s: WriteSupport =>
+      case s: WriteMicroBatchSupport =>
         val writer = s.createWriter(
-          s"$runId:$currentBatchId",
-          withNewSources.schema,
-          SaveMode.Append,
+          s"$runId",
+          currentBatchId,
+          triggerLogicalPlan.schema,
+          outputMode,
           DataSourceV2Options.empty())
         WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
-      case s: Sink => triggerLogicalPlan
+      case _: Sink => triggerLogicalPlan
       case _ => throw new IllegalArgumentException("unknown sink type")
     }
 
@@ -755,7 +758,7 @@ class StreamExecution(
       SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution) {
         sink match {
           case s: Sink => s.addBatch(currentBatchId, nextBatch)
-          case s: WriteSupport =>
+          case s: WriteMicroBatchSupport =>
             // Execute the V2 writer node in the query plan.
             nextBatch.collect()
         }

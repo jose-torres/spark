@@ -180,20 +180,16 @@ class MemoryStreamDataReader[A: Encoder](data: Seq[A]) extends DataReader[Row] {
  * A sink that stores the results in memory. This [[Sink]] is primarily intended for use in unit
  * tests and does not provide durability.
  */
-class MemorySinkV2 extends DataSourceV2 with WriteSupport with Logging with BaseStreamingSink {
+class MemorySinkV2 extends DataSourceV2
+  with WriteMicroBatchSupport with Logging with BaseStreamingSink {
 
   override def createWriter(
-      jobId: String,
+      queryId: String,
+      batchId: Long,
       schema: StructType,
-      mode: SaveMode,
+      mode: OutputMode,
       options: DataSourceV2Options): java.util.Optional[DataSourceV2Writer] = {
-    val outputMode = mode match {
-      case SaveMode.Append => OutputMode.Append()
-      case SaveMode.Overwrite => OutputMode.Complete()
-      case _ => throw new IllegalArgumentException("unsupported save mode")
-    }
-    val batchId = jobId.split(":")(1).toInt
-    java.util.Optional.of(new MemoryWriter(this, batchId, outputMode))
+    java.util.Optional.of(new MemoryWriter(this, batchId, mode))
   }
 
   private case class AddedData(batchId: Long, data: Array[Row])
@@ -222,7 +218,7 @@ class MemorySinkV2 extends DataSourceV2 with WriteSupport with Logging with Base
     }.mkString("\n")
   }
 
-  def write(batchId: Int, outputMode: OutputMode, newRows: Array[Row]): Unit = {
+  def write(batchId: Long, outputMode: OutputMode, newRows: Array[Row]): Unit = {
     val notCommitted = synchronized {
       latestBatchId.isEmpty || batchId > latestBatchId.get
     }
@@ -258,7 +254,7 @@ class MemorySinkV2 extends DataSourceV2 with WriteSupport with Logging with Base
 
 case class MemoryWriterCommitMessage(partition: Int, data: Seq[Row]) extends WriterCommitMessage {}
 
-class MemoryWriter(sink: MemorySinkV2, batchId: Int, outputMode: OutputMode)
+class MemoryWriter(sink: MemorySinkV2, batchId: Long, outputMode: OutputMode)
   extends DataSourceV2Writer with Logging {
 
   override def createWriterFactory: MemoryWriterFactory = MemoryWriterFactory(outputMode)

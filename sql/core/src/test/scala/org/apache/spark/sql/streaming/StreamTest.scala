@@ -245,7 +245,7 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
     var currentStream: StreamExecution = null
     var lastStream: StreamExecution = null
     val awaiting = new mutable.HashMap[Int, Offset]() // source index -> offset to wait for
-    val sink = new MemorySink(stream.schema, outputMode)
+    val sink = new MemorySinkV2()
     val resetConfValues = mutable.Map[String, Option[String]]()
 
     @volatile

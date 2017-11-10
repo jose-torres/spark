@@ -291,7 +291,7 @@ class StreamSuite extends StreamTest {
     // For each batch, we would log the sink change after the execution
     // This checks whether the key of the sink change log is the expected batch id
     def CheckSinkLatestBatchId(expectedId: Int): AssertOnQuery =
-      AssertOnQuery(_.sink.asInstanceOf[MemorySink].latestBatchId.get == expectedId,
+      AssertOnQuery(_.sink.asInstanceOf[MemorySinkV2].latestBatchId.get == expectedId,
         s"sink's lastBatchId should be $expectedId")
 
     val inputData = MemoryStream[Int]
