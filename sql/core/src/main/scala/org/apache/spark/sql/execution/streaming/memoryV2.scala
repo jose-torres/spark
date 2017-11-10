@@ -297,3 +297,4 @@ case class MemoryPlanV2(sink: MemorySinkV2, override val output: Seq[Attribute])
 
   override def computeStats(): Statistics = Statistics(sizePerRow * sink.allData.size)
 }
+

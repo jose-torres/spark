@@ -35,6 +35,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Range
 import org.apache.spark.sql.catalyst.streaming.InternalOutputModes
 import org.apache.spark.sql.execution.command.ExplainCommand
 import org.apache.spark.sql.execution.streaming._
+import org.apache.spark.sql.execution.streaming.MemoryStreamV2
 import org.apache.spark.sql.execution.streaming.state.{StateStore, StateStoreConf, StateStoreId, StateStoreProvider}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -49,6 +50,20 @@ class StreamSuite extends StreamTest {
 
   test("map with recovery") {
     val inputData = MemoryStream[Int]
+    val mapped = inputData.toDS().map(_ + 1)
+
+    testStream(mapped)(
+      AddData(inputData, 1, 2, 3),
+      StartStream(),
+      CheckAnswer(2, 3, 4),
+      StopStream,
+      AddData(inputData, 4, 5, 6),
+      StartStream(),
+      CheckAnswer(2, 3, 4, 5, 6, 7))
+  }
+
+  test("v2") {
+    val inputData = new MemoryStreamV2[Int]
     val mapped = inputData.toDS().map(_ + 1)
 
     testStream(mapped)(

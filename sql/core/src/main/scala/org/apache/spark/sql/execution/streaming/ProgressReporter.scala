@@ -17,9 +17,6 @@
 
 package org.apache.spark.sql.execution.streaming
 
-import java.text.SimpleDateFormat
-import java.util.{Date, UUID}
-
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
@@ -28,6 +25,7 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.plans.logical.{EventTimeWatermark, LogicalPlan}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.sources.v2.{BaseStreamingSink, BaseStreamingSource}
 import org.apache.spark.sql.streaming._
 import org.apache.spark.sql.streaming.StreamingQueryListener.QueryProgressEvent
 import org.apache.spark.util.Clock
@@ -42,7 +40,7 @@ import org.apache.spark.util.Clock
 trait ProgressReporter extends Logging {
 
   case class ExecutionStats(
-    inputRows: Map[Source, Long],
+    inputRows: Map[BaseStreamingSource, Long],
     stateOperators: Seq[StateOperatorProgress],
     eventTimeStats: Map[String, String])
 
@@ -56,8 +54,8 @@ trait ProgressReporter extends Logging {
   protected def newData: Map[Source, DataFrame]
   protected def availableOffsets: StreamProgress
   protected def committedOffsets: StreamProgress
-  protected def sources: Seq[Source]
-  protected def sink: Sink
+  protected def sources: Seq[BaseStreamingSource]
+  protected def sink: BaseStreamingSink
   protected def offsetSeqMetadata: OffsetSeqMetadata
   protected def currentBatchId: Long
   protected def sparkSession: SparkSession
@@ -225,12 +223,13 @@ trait ProgressReporter extends Logging {
     //
     // 3. For each source, we sum the metrics of the associated execution plan leaves.
     //
-    val logicalPlanLeafToSource = newData.flatMap { case (source, df) =>
-      df.logicalPlan.collectLeaves().map { leaf => leaf -> source }
-    }
+    val logicalPlanLeafToSource: Map[LogicalPlan, BaseStreamingSource] =
+      newData.flatMap { case (source, df) =>
+        df.logicalPlan.collectLeaves().map { leaf => leaf -> source }
+      }
     val allLogicalPlanLeaves = lastExecution.logical.collectLeaves() // includes non-streaming
     val allExecPlanLeaves = lastExecution.executedPlan.collectLeaves()
-    val numInputRows: Map[Source, Long] =
+    val numInputRows: Map[BaseStreamingSource, Long] =
       if (allLogicalPlanLeaves.size == allExecPlanLeaves.size) {
         val execLeafToSource = allLogicalPlanLeaves.zip(allExecPlanLeaves).flatMap {
           case (lp, ep) => logicalPlanLeafToSource.get(lp).map { source => ep -> source }
