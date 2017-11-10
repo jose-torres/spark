@@ -17,7 +17,6 @@
 
 package org.apache.spark.sql.streaming
 
-import java.util.UUID
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable
@@ -31,6 +30,7 @@ import org.apache.spark.sql.catalyst.analysis.UnsupportedOperationChecker
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.state.StateStoreCoordinatorRef
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.sources.v2.BaseStreamingSink
 import org.apache.spark.util.{Clock, SystemClock, Utils}
 
 /**
@@ -188,7 +188,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
       userSpecifiedName: Option[String],
       userSpecifiedCheckpointLocation: Option[String],
       df: DataFrame,
-      sink: Sink,
+      sink: BaseStreamingSink,
       outputMode: OutputMode,
       useTempCheckpointLocation: Boolean,
       recoverFromCheckpointLocation: Boolean,

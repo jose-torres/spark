@@ -39,6 +39,7 @@ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.util._
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.state.StateStore
+import org.apache.spark.sql.sources.v2.BaseStreamingSource
 import org.apache.spark.sql.streaming.StreamingQueryListener._
 import org.apache.spark.sql.test.SharedSQLContext
 import org.apache.spark.util.{Clock, SystemClock, Utils}
@@ -91,6 +92,8 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
   object AddData {
     def apply[A](source: MemoryStream[A], data: A*): AddDataMemory[A] =
       AddDataMemory(source, data)
+    def apply[A](source: MemoryStreamV2[A], data: A*): AddDataMemoryV2[A] =
+      AddDataMemoryV2(source, data)
   }
 
   /** A trait that can be extended when testing a source. */
@@ -100,7 +103,7 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
      * the active query, and then return the source object the data was added, as well as the
      * offset of added data.
      */
-    def addData(query: Option[StreamExecution]): (Source, Offset)
+    def addData(query: Option[StreamExecution]): (BaseStreamingSource, Offset)
   }
 
   /** A trait that can be extended when testing a source. */
@@ -112,6 +115,14 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
     override def toString: String = s"AddData to $source: ${data.mkString(",")}"
 
     override def addData(query: Option[StreamExecution]): (Source, Offset) = {
+      (source, source.addData(data))
+    }
+  }
+
+  case class AddDataMemoryV2[A](source: MemoryStreamV2[A], data: Seq[A]) extends AddData {
+    override def toString: String = s"AddData to $source: ${data.mkString(",")}"
+
+    override def addData(query: Option[StreamExecution]): (BaseStreamingSource, Offset) = {
       (source, source.addData(data))
     }
   }
@@ -521,7 +532,10 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
 
               def findSourceIndex(plan: LogicalPlan): Option[Int] = {
                 plan
-                  .collect { case StreamingExecutionRelation(s, _) => s }
+                  .collect {
+                    case StreamingExecutionRelation(s, _) => s
+                    case StreamingExecutionRelationV2(s, _) => s
+                  }
                   .zipWithIndex
                   .find(_._1 == source)
                   .map(_._2)
@@ -554,7 +568,10 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
             // Get the map of source index to the current source objects
             val indexToSource = currentStream
               .logicalPlan
-              .collect { case StreamingExecutionRelation(s, _) => s }
+              .collect {
+                case StreamingExecutionRelation(s, _) => s
+                case StreamingExecutionRelationV2(s, _) => s
+              }
               .zipWithIndex
               .map(_.swap)
               .toMap
