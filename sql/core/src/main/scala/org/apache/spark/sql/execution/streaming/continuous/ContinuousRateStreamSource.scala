@@ -70,7 +70,7 @@ class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Lon
   private var nextReadTime = 0L
   private var numReadRows = 0L
 
-  private var currentValue = startValue.toInt
+  private var currentValue = startValue
   private var currentRow: Row = null
 
   override def next(): Boolean = {
