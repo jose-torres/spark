@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.streaming
 
+import java.util.UUID
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable

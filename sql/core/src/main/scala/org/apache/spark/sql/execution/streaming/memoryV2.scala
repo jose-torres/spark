@@ -260,10 +260,15 @@ class MemoryWriter(sink: MemorySinkV2, batchId: Long, outputMode: OutputMode)
 
   def commit(messages: Array[WriterCommitMessage]): Unit = {
     val newRows = messages.flatMap { message =>
-      assert(message.isInstanceOf[MemoryWriterCommitMessage])
-      message.asInstanceOf[MemoryWriterCommitMessage].data
+      // TODO remove
+      if (message != null) {
+        assert(message.isInstanceOf[MemoryWriterCommitMessage])
+        message.asInstanceOf[MemoryWriterCommitMessage].data
+      } else {
+        Seq()
+      }
     }
-    sink.write(batchId, outputMode, newRows.toArray)
+    sink.write(batchId, outputMode, newRows)
   }
 
   override def abort(messages: Array[WriterCommitMessage]): Unit = {

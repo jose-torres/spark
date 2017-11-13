@@ -36,12 +36,13 @@ import org.apache.spark.sql.catalyst.streaming.InternalOutputModes
 import org.apache.spark.sql.execution.command.ExplainCommand
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.MemoryStreamV2
+import org.apache.spark.sql.execution.streaming.continuous.ContinuousRateStreamSource
 import org.apache.spark.sql.execution.streaming.state.{StateStore, StateStoreConf, StateStoreId, StateStoreProvider}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.StreamSourceProvider
 import org.apache.spark.sql.streaming.util.StreamManualClock
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
 
 class StreamSuite extends StreamTest {
@@ -62,7 +63,7 @@ class StreamSuite extends StreamTest {
       CheckAnswer(2, 3, 4, 5, 6, 7))
   }
 
-  test("v2") {
+  test("v2source") {
     val inputData = new MemoryStreamV2[Int]
     val mapped = inputData.toDS().map(_ + 1)
 
@@ -74,6 +75,24 @@ class StreamSuite extends StreamTest {
       AddData(inputData, 4, 5, 6),
       StartStream(),
       CheckAnswer(2, 3, 4, 5, 6, 7))
+  }
+
+  test("continuous source") {
+    val inputData = new ContinuousRateStreamSource
+    val mapped = Dataset.ofRows(
+      sqlContext.sparkSession,
+      new ContinuousExecutionRelation(inputData, StructType(
+        StructField("timestamp", TimestampType, false) ::
+          StructField("value", LongType, false) :: Nil).toAttributes)
+      (sqlContext.sparkSession))
+
+    testStream(mapped.select('value))(
+      StartStream(),
+      new ExternalAction {
+        override def runAction(): Unit = synchronized { wait(4500) }
+      },
+      CheckAnswer(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+      StopStream)
   }
 
   test("join") {

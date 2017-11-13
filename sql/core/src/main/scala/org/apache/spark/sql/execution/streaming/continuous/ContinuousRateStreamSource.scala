@@ -21,6 +21,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.execution.streaming.Offset
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceV2, DataSourceV2Options}
 import org.apache.spark.sql.sources.v2.reader.{DataReader, DataSourceV2Reader, ReadTask}
 import org.apache.spark.sql.types.{LongType, StructField, StructType, TimestampType}
@@ -32,12 +33,19 @@ object ContinuousRateStreamSource {
 
 class ContinuousRateStreamSource extends DataSourceV2 with ContinuousReadSupport {
   override def createContinuousReader(
-      schema: java.util.Optional[StructType], options: DataSourceV2Options): Unit = {
+      schema: java.util.Optional[StructType],
+      options: DataSourceV2Options): ContinuousRateStreamReader = {
     new ContinuousRateStreamReader(options)
   }
+
+  def commit(end: Offset): Unit = {}
+
+  /** Stop this source and free any resources it has allocated. */
+  def stop(): Unit = {}
 }
 
-class ContinuousRateStreamReader(options: DataSourceV2Options) extends DataSourceV2Reader {
+class ContinuousRateStreamReader(options: DataSourceV2Options)
+  extends DataSourceV2Reader {
   override def readSchema(): StructType = {
     StructType(
         StructField("timestamp", TimestampType, false) ::
@@ -46,7 +54,7 @@ class ContinuousRateStreamReader(options: DataSourceV2Options) extends DataSourc
 
   override def createReadTasks(): java.util.List[ReadTask[Row]] = {
     val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("1").toInt
-    val rowsPerSecond = options.get(ContinuousRateStreamSource.ROWS_PER_SECOND).orElse("1").toLong
+    val rowsPerSecond = options.get(ContinuousRateStreamSource.ROWS_PER_SECOND).orElse("5").toLong
 
     val start = 0L
     val perPartitionRate = rowsPerSecond.toDouble / numPartitions.toDouble
@@ -74,6 +82,9 @@ class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Lon
   private var currentRow: Row = null
 
   override def next(): Boolean = {
+    // Set the timestamp for the first time.
+    if (currentRow == null) nextReadTime = System.currentTimeMillis() + 1000
+
     if (numReadRows == rowsPerSecond) {
       // Spin until we reach the next second.
       while (System.currentTimeMillis < nextReadTime) {}
@@ -81,11 +92,14 @@ class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Lon
       nextReadTime += 1000
     }
 
-    currentRow = Row(DateTimeUtils.fromMillis(System.currentTimeMillis), currentValue)
+    currentRow = Row(
+      DateTimeUtils.toJavaTimestamp(DateTimeUtils.fromMillis(System.currentTimeMillis)),
+      currentValue)
     currentValue += increment
     numReadRows += 1
 
-    true
+    if (currentValue > 11) false
+    else true
   }
 
   override def get: Row = currentRow

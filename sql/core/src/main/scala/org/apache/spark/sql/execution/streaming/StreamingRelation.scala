@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.plans.logical.LeafNode
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.datasources.DataSource
-import org.apache.spark.sql.sources.v2.ReadMicroBatchSupport
+import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, ReadMicroBatchSupport}
 
 object StreamingRelation {
   def apply(dataSource: DataSource): StreamingRelation = {
@@ -82,6 +82,23 @@ case class StreamingExecutionRelation(
  */
 case class StreamingExecutionRelationV2(
     source: ReadMicroBatchSupport,
+    output: Seq[Attribute])(session: SparkSession)
+  extends LeafNode {
+
+  override def isStreaming: Boolean = true
+  override def toString: String = source.toString
+
+  // There's no sensible value here. On the execution path, this relation will be
+  // swapped out with microbatches. But some dataframe operations (in particular explain) do lead
+  // to this node surviving analysis. So we satisfy the LeafNode contract with the session default
+  // value.
+  override def computeStats(): Statistics = Statistics(
+    sizeInBytes = BigInt(session.sessionState.conf.defaultSizeInBytes)
+  )
+}
+
+case class ContinuousExecutionRelation(
+    source: ContinuousReadSupport,
     output: Seq[Attribute])(session: SparkSession)
   extends LeafNode {
 

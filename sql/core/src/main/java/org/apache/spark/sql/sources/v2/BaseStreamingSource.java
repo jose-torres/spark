@@ -2,12 +2,9 @@ package org.apache.spark.sql.sources.v2;
 
 import org.apache.spark.sql.execution.streaming.Offset;
 
-<<<<<<< HEAD
 /**
  * The shared interface between V1 and V2 streaming sources.
  */
-=======
->>>>>>> aa159e5030... partial
 public interface BaseStreamingSource {
   /**
    * Informs the source that Spark has completed processing all data for offsets less than or

@@ -43,6 +43,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.v2._
 import org.apache.spark.sql.sources.v2.reader.DataSourceV2Reader
 import org.apache.spark.sql.streaming._
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.{Clock, UninterruptibleThread, Utils}
 
 /** States for [[StreamExecution]]'s lifecycle. */
@@ -185,6 +186,7 @@ class StreamExecution(
     sources = _logicalPlan.collect {
       case s: StreamingExecutionRelation => s.source
       case s: StreamingExecutionRelationV2 => s.source
+      case s: ContinuousExecutionRelation => s.source
     }
     uniqueSources = sources.distinct
     _logicalPlan
@@ -203,7 +205,7 @@ class StreamExecution(
   var lastExecution: IncrementalExecution = _
 
   /** Holds the most recent input data for each source. */
-  protected var newData: Map[Source, DataFrame] = _
+  protected var newData: Map[BaseStreamingSource, DataFrame] = _
 
   @volatile
   private var streamDeathCause: StreamingQueryException = null
@@ -572,6 +574,7 @@ class StreamExecution(
               // convert from Java optional
               (s, Option(s.getOffset.orElse(null)))
             }
+          case s: ContinuousReadSupport => (s, Some(LongOffset(-1)))
           case _ => throw new IllegalStateException("unknown source type")
         }.toMap
         availableOffsets ++= latestOffsets.filter { case (s, o) => o.nonEmpty }.mapValues(_.get)
@@ -694,7 +697,7 @@ class StreamExecution(
       }
     }
 
-    val newReaders: Map[ReadMicroBatchSupport, DataSourceV2Reader] = reportTimeTaken("getBatch") {
+    val newReaders: Map[BaseStreamingSource, DataSourceV2Reader] = reportTimeTaken("getBatch") {
       availableOffsets.flatMap {
         case (source: ReadMicroBatchSupport, available)
           if committedOffsets.get(source).map(_ != available).getOrElse(true) =>
@@ -704,6 +707,10 @@ class StreamExecution(
             available,
             DataSourceV2Options.empty())
           logDebug(s"Retrieving data from $source: $current -> $available")
+          Some(source -> reader)
+        case (source: ContinuousReadSupport, available) =>
+          val reader = source.createContinuousReader(
+            java.util.Optional.empty[StructType](), DataSourceV2Options.empty())
           Some(source -> reader)
         case _ => None
       }
@@ -725,6 +732,17 @@ class StreamExecution(
           LocalRelation(output, isStreaming = true)
         }
       case StreamingExecutionRelationV2(source, output) =>
+        newReaders.get(source).map { reader =>
+          val newOutput = reader.readSchema().toAttributes
+          assert(output.size == newOutput.size,
+            s"Invalid batch: ${Utils.truncatedString(output, ",")} != " +
+              s"${Utils.truncatedString(newOutput, ",")}")
+          replacements ++= output.zip(newOutput)
+          DataSourceV2Relation(newOutput, reader)
+        }.getOrElse {
+          LocalRelation(output, isStreaming = true)
+        }
+      case ContinuousExecutionRelation(source, output) =>
         newReaders.get(source).map { reader =>
           val newOutput = reader.readSchema().toAttributes
           assert(output.size == newOutput.size,
@@ -785,7 +803,8 @@ class StreamExecution(
           case s: Sink => s.addBatch(currentBatchId, nextBatch)
           case s: WriteMicroBatchSupport =>
             // Execute the V2 writer node in the query plan.
-            nextBatch.collect()
+            val qe = nextBatch.queryExecution
+            SQLExecution.withNewExecutionId(sparkSession, qe)(qe.toRdd)
         }
       }
     }

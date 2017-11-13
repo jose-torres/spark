@@ -5,7 +5,7 @@ import java.util.Optional;
 import org.apache.spark.sql.sources.v2.reader.DataSourceV2Reader;
 import org.apache.spark.sql.types.StructType;
 
-public interface ContinuousReadSupport {
+public interface ContinuousReadSupport extends BaseStreamingSource {
   /**
    * Creates a {@link DataSourceV2Reader} to scan the data from this data source.
    *
