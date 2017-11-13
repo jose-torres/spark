@@ -58,13 +58,21 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
     logInfo(s"Start processing data source writer: $writer. " +
       s"The input RDD has ${messages.length} partitions.")
 
-    EpochCoordinatorRef.forDriver(writer.asInstanceOf[SupportsContinuousWrite], SparkEnv.get)
-
     try {
+      val runTask = writer match {
+        case w: ContinuousWriter =>
+          // Set up RPC endpoint on the driver before running.
+          val queryId = w.getQueryId()
+          EpochCoordinatorRef.forDriver(w, queryId, SparkEnv.get)
+          (context: TaskContext, iter: Iterator[InternalRow]) =>
+            DataWritingSparkTask.runContinuous(writeTask, queryId, context, iter)
+        case _ =>
+          (context: TaskContext, iter: Iterator[InternalRow]) =>
+            DataWritingSparkTask.run(writeTask, context, iter)
+      }
       sparkContext.runJob(
         rdd,
-        (context: TaskContext, iter: Iterator[InternalRow]) =>
-          DataWritingSparkTask.run(writeTask, context, iter),
+        runTask,
         rdd.partitions.indices,
         (index, message: WriterCommitMessage) => messages(index) = message
       )
@@ -98,6 +106,28 @@ object DataWritingSparkTask extends Logging {
       iter: Iterator[InternalRow]): WriterCommitMessage = {
     val dataWriter = writeTask.createDataWriter(context.partitionId(), context.attemptNumber())
 
+    // write the data and commit this writer.
+    Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
+      iter.foreach(dataWriter.write)
+      logInfo(s"Writer for partition ${context.partitionId()} is committing.")
+      val msg = dataWriter.commit()
+      logInfo(s"Writer for partition ${context.partitionId()} committed.")
+      msg
+    })(catchBlock = {
+      // If there is an error, abort this writer
+      logError(s"Writer for partition ${context.partitionId()} is aborting.")
+      dataWriter.abort()
+      logError(s"Writer for partition ${context.partitionId()} aborted.")
+    })
+  }
+
+  def runContinuous(
+     writeTask: DataWriterFactory[InternalRow],
+     queryId: String,
+     context: TaskContext,
+     iter: Iterator[InternalRow]): WriterCommitMessage = {
+    val dataWriter = writeTask.createDataWriter(context.partitionId(), context.attemptNumber())
+
     var currentMsg: WriterCommitMessage = null
     var epoch = 0
     do {
@@ -115,7 +145,7 @@ object DataWritingSparkTask extends Logging {
         logError(s"Writer for partition ${context.partitionId()} aborted.")
       })
 
-      EpochCoordinatorRef.forExecutor(SparkEnv.get).send(
+      EpochCoordinatorRef.forExecutor(queryId, SparkEnv.get).send(
         CommitPartitionEpoch(context.partitionId(), epoch, currentMsg)
       )
       epoch += 1

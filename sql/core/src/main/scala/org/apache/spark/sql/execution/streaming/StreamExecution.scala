@@ -770,6 +770,15 @@ class StreamExecution(
 
     // In data source V2, also append the sink. (In V1 the sink doesn't participate in the plan.)
     val withPossibleV2Sink = sink match {
+      case s: ContinuousWriteSupport
+        if sources.exists(_.isInstanceOf[ContinuousReadSupport]) =>
+        val writer = s.createContinuousWriter(
+          s"$id",
+          currentBatchId,
+          triggerLogicalPlan.schema,
+          outputMode,
+          DataSourceV2Options.empty())
+        WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
       case s: WriteMicroBatchSupport =>
         val writer = s.createWriter(
           s"$runId",

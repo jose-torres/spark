@@ -180,7 +180,8 @@ class MemoryStreamDataReader[A: Encoder](data: Seq[A]) extends DataReader[Row] {
  * A sink that stores the results in memory. This [[Sink]] is primarily intended for use in unit
  * tests and does not provide durability.
  */
-class MemorySinkV2 extends DataSourceV2 with WriteMicroBatchSupport with Logging {
+class MemorySinkV2 extends DataSourceV2
+  with WriteMicroBatchSupport with ContinuousWriteSupport with Logging {
 
   override def createWriter(
       queryId: String,
@@ -188,8 +189,16 @@ class MemorySinkV2 extends DataSourceV2 with WriteMicroBatchSupport with Logging
       schema: StructType,
       mode: OutputMode,
       options: DataSourceV2Options): java.util.Optional[DataSourceV2Writer] = {
-    // java.util.Optional.of(new MemoryWriter(this, batchId, mode))
-    java.util.Optional.of(new ContinuousMemoryWriter(this, mode))
+    java.util.Optional.of(new MemoryWriter(this, batchId, mode))
+  }
+
+  override def createContinuousWriter(
+      queryId: String,
+      batchId: Long,
+      schema: StructType,
+      mode: OutputMode,
+      options: DataSourceV2Options): java.util.Optional[DataSourceV2Writer] = {
+    java.util.Optional.of(new ContinuousMemoryWriter(this, queryId, mode))
   }
 
   private case class AddedData(batchId: Long, data: Array[Row])
@@ -277,10 +286,12 @@ class MemoryWriter(sink: MemorySinkV2, batchId: Long, outputMode: OutputMode)
   }
 }
 
-class ContinuousMemoryWriter(sink: MemorySinkV2, outputMode: OutputMode)
-  extends MemoryWriter(sink, -1, outputMode) with Logging with SupportsContinuousWrite {
+class ContinuousMemoryWriter(sink: MemorySinkV2, val queryId: String, outputMode: OutputMode)
+  extends MemoryWriter(sink, -1, outputMode) with Logging with ContinuousWriter {
 
   override def createWriterFactory: MemoryWriterFactory = MemoryWriterFactory(outputMode)
+
+  override def getQueryId: String = queryId
 
   override def commit(epochId: Long, messages: Array[WriterCommitMessage]): Unit = {
     val newRows = messages.flatMap { message =>

@@ -91,7 +91,7 @@ class StreamSuite extends StreamTest {
       new ExternalAction {
         override def runAction(): Unit = synchronized { wait(4500) }
       },
-      CheckAnswer(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+      CheckAnswer(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
       StopStream)
   }
 

@@ -19,8 +19,8 @@ package org.apache.spark.sql.execution.streaming.continuous
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
-import org.apache.spark.rpc.{RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
-import org.apache.spark.sql.sources.v2.writer.{DataSourceV2Writer, SupportsContinuousWrite, WriterCommitMessage}
+import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
+import org.apache.spark.sql.sources.v2.writer.{ContinuousWriter, WriterCommitMessage}
 import org.apache.spark.util.RpcUtils
 
 case class CommitPartitionEpoch(
@@ -28,40 +28,57 @@ case class CommitPartitionEpoch(
   epoch: Long,
   message: WriterCommitMessage)
 
+case class GetCurrentEpoch()
+
 /** Helper object used to create reference to [[EpochCoordinator]]. */
 object EpochCoordinatorRef extends Logging {
 
-  private val endpointName = "EpochCoordinator"
+  private val endpointNamePrefix = "EpochCoordinator-"
+
+  private def endpointName(queryId: String) = s"EpochCoordinator-$queryId"
 
   /**
    * Create a reference to an [[EpochCoordinator]]
    */
-  def forDriver(writer: SupportsContinuousWrite, env: SparkEnv): RpcEndpointRef = synchronized {
+  def forDriver(
+      writer: ContinuousWriter,
+      queryId: String,
+      env: SparkEnv): RpcEndpointRef = synchronized {
     try {
-      val coordinator = new EpochCoordinator(writer, env.rpcEnv)
-      val coordinatorRef = env.rpcEnv.setupEndpoint(endpointName, coordinator)
+      val coordinator = new EpochCoordinator(writer, queryId, env.rpcEnv)
+      val coordinatorRef = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
       logInfo("Registered EpochCoordinator endpoint")
       coordinatorRef
     } catch {
       case e: IllegalArgumentException =>
-        val rpcEndpointRef = RpcUtils.makeDriverRef(endpointName, env.conf, env.rpcEnv)
+        val rpcEndpointRef = RpcUtils.makeDriverRef(endpointName(queryId), env.conf, env.rpcEnv)
         logDebug("Retrieved existing EpochCoordinator endpoint")
         rpcEndpointRef
     }
   }
 
-  def forExecutor(env: SparkEnv): RpcEndpointRef = synchronized {
-    val rpcEndpointRef = RpcUtils.makeDriverRef(endpointName, env.conf, env.rpcEnv)
+  def forExecutor(queryId: String, env: SparkEnv): RpcEndpointRef = synchronized {
+    val rpcEndpointRef = RpcUtils.makeDriverRef(endpointName(queryId), env.conf, env.rpcEnv)
     logDebug("Retrieved existing EpochCoordinator endpoint")
     rpcEndpointRef
   }
 }
 
-class EpochCoordinator(writer: SupportsContinuousWrite, override val rpcEnv: RpcEnv)
+class EpochCoordinator(writer: ContinuousWriter, queryId: String, override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
+
+  private val startTime = System.currentTimeMillis()
+
   override def receive: PartialFunction[Any, Unit] = {
     case CommitPartitionEpoch(partitionId, epoch, message) =>
       logError(s"Got commit from partition $partitionId at epoch $epoch: $message")
       writer.commit(epoch, Seq(message).toArray)
+  }
+
+  override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+    case GetCurrentEpoch() =>
+      val epoch = (System.currentTimeMillis() - startTime) / 500
+      logDebug(s"Epoch $epoch")
+      context.reply(epoch)
   }
 }

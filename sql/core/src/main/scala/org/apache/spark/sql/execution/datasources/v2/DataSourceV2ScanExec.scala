@@ -52,10 +52,13 @@ case class DataSourceV2ScanExec(
         }.asJava
     }
 
-    val inputRDD = new DataSourceRDD(sparkContext, readTasks)
-      .asInstanceOf[RDD[InternalRow]]
+    val inputRDD = reader match {
+      case _: ContinuousReader => new ContinuousDataSourceRDD(sparkContext, readTasks)
+      case _ => new DataSourceRDD(sparkContext, readTasks)
+    }
+
     val numOutputRows = longMetric("numOutputRows")
-    inputRDD.map { r =>
+    inputRDD.asInstanceOf[RDD[InternalRow]].map { r =>
       numOutputRows += 1
       r
     }

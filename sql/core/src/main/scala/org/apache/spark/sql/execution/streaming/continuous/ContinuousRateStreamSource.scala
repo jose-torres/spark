@@ -23,7 +23,7 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming.Offset
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceV2, DataSourceV2Options}
-import org.apache.spark.sql.sources.v2.reader.{DataReader, DataSourceV2Reader, ReadTask}
+import org.apache.spark.sql.sources.v2.reader.{ContinuousReader, DataReader, DataSourceV2Reader, ReadTask}
 import org.apache.spark.sql.types.{LongType, StructField, StructType, TimestampType}
 
 object ContinuousRateStreamSource {
@@ -45,7 +45,7 @@ class ContinuousRateStreamSource extends DataSourceV2 with ContinuousReadSupport
 }
 
 class ContinuousRateStreamReader(options: DataSourceV2Options)
-  extends DataSourceV2Reader {
+  extends DataSourceV2Reader with ContinuousReader {
   override def readSchema(): StructType = {
     StructType(
         StructField("timestamp", TimestampType, false) ::
@@ -82,10 +82,6 @@ class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Lon
   private var currentRow: Row = null
 
   override def next(): Boolean = {
-    if (currentValue % 3 == 2) {
-      currentValue += 1
-      return false
-    }
     // Set the timestamp for the first time.
     if (currentRow == null) nextReadTime = System.currentTimeMillis() + 1000
 
@@ -102,6 +98,7 @@ class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Lon
     currentValue += increment
     numReadRows += 1
 
+    print(s"VVVVVV $currentRow\n")
     true
   }
 
