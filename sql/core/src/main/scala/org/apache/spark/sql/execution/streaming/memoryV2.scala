@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.streaming.InternalOutputModes._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.sources.v2._
 import org.apache.spark.sql.sources.v2.reader.{DataReader, DataSourceV2Reader, ReadTask}
-import org.apache.spark.sql.sources.v2.writer.{DataSourceV2Writer, DataWriter, DataWriterFactory, WriterCommitMessage}
+import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
@@ -188,7 +188,8 @@ class MemorySinkV2 extends DataSourceV2 with WriteMicroBatchSupport with Logging
       schema: StructType,
       mode: OutputMode,
       options: DataSourceV2Options): java.util.Optional[DataSourceV2Writer] = {
-    java.util.Optional.of(new MemoryWriter(this, batchId, mode))
+    // java.util.Optional.of(new MemoryWriter(this, batchId, mode))
+    java.util.Optional.of(new ContinuousMemoryWriter(this, mode))
   }
 
   private case class AddedData(batchId: Long, data: Array[Row])
@@ -276,6 +277,29 @@ class MemoryWriter(sink: MemorySinkV2, batchId: Long, outputMode: OutputMode)
   }
 }
 
+class ContinuousMemoryWriter(sink: MemorySinkV2, outputMode: OutputMode)
+  extends MemoryWriter(sink, -1, outputMode) with Logging with SupportsContinuousWrite {
+
+  override def createWriterFactory: MemoryWriterFactory = MemoryWriterFactory(outputMode)
+
+  override def commit(epochId: Long, messages: Array[WriterCommitMessage]): Unit = {
+    val newRows = messages.flatMap { message =>
+      // TODO remove
+      if (message != null) {
+        assert(message.isInstanceOf[MemoryWriterCommitMessage])
+        message.asInstanceOf[MemoryWriterCommitMessage].data
+      } else {
+        Seq()
+      }
+    }
+    sink.write(epochId, outputMode, newRows)
+  }
+
+  override def abort(messages: Array[WriterCommitMessage]): Unit = {
+    // Don't accept any of the new input.
+  }
+}
+
 case class MemoryWriterFactory(outputMode: OutputMode) extends DataWriterFactory[Row] {
   def createDataWriter(partitionId: Int, attemptNumber: Int): DataWriter[Row] = {
     new MemoryDataWriter(partitionId, outputMode)
@@ -289,7 +313,12 @@ class MemoryDataWriter(partition: Int, outputMode: OutputMode)
 
   override def write(row: Row): Unit = data.append(row)
 
-  override def commit(): MemoryWriterCommitMessage = MemoryWriterCommitMessage(partition, data)
+  override def commit(): MemoryWriterCommitMessage = {
+    // Clear the buffer so we can use this writer for both microbatch and continuous streaming.
+    val msg = MemoryWriterCommitMessage(partition, data.clone())
+    data.clear()
+    msg
+  }
 
   override def abort(): Unit = {}
 }
