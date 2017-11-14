@@ -54,7 +54,7 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
   }
 
   override def createReadTasks(): java.util.List[ReadTask[Row]] = {
-    val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("2").toInt
+    val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("3").toInt
     val rowsPerSecond = options.get(ContinuousRateStreamSource.ROWS_PER_SECOND).orElse("6").toLong
 
     val start = 0L

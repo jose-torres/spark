@@ -91,7 +91,7 @@ class EpochCoordinator(writer: ContinuousWriter, session: SparkSession, override
       partitionCommits.put((epoch, partition), message)
       val thisEpochCommits =
         partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
-      if (thisEpochCommits.size == 2) {
+      if (thisEpochCommits.size == 3) {
         logError(s"Epoch $epoch has received commits from all partitions. Committing to writer.")
         writer.commit(epoch, thisEpochCommits.toArray)
       }

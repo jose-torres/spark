@@ -98,7 +98,7 @@ class StreamSuite extends StreamTest {
       .sink
 
     Thread.sleep(4200)
-    assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 20).sorted.map(Row(_)))
+    assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 21).sorted.map(Row(_)))
 
     query.stop()
     // make sure jobs are stopped
