@@ -388,7 +388,7 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
             })
 
             lastStream = currentStream
-            currentStream =
+            val currentStreamMaybeWrapped =
               sparkSession
                 .streams
                 .startQuery(
@@ -399,8 +399,10 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
                   outputMode,
                   trigger = trigger,
                   triggerClock = triggerClock)
-                .asInstanceOf[StreamingQueryWrapper]
-                .streamingQuery
+            currentStream = currentStreamMaybeWrapped match {
+              case w: StreamingQueryWrapper => w.streamingQuery
+              case _ => throw new IllegalStateException()
+            }
             // Wait until the initialization finishes, because some tests need to use `logicalPlan`
             // after starting the query.
             try {

@@ -197,7 +197,7 @@ class MemorySinkV2 extends DataSourceV2
       batchId: Long,
       schema: StructType,
       mode: OutputMode,
-      options: DataSourceV2Options): java.util.Optional[DataSourceV2Writer] = {
+      options: DataSourceV2Options): java.util.Optional[ContinuousWriter] = {
     java.util.Optional.of(new ContinuousMemoryWriter(this, queryId, mode))
   }
 
@@ -286,7 +286,7 @@ class MemoryWriter(sink: MemorySinkV2, batchId: Long, outputMode: OutputMode)
   }
 }
 
-class ContinuousMemoryWriter(sink: MemorySinkV2, val queryId: String, outputMode: OutputMode)
+class ContinuousMemoryWriter(val sink: MemorySinkV2, val queryId: String, outputMode: OutputMode)
   extends MemoryWriter(sink, -1, outputMode) with Logging with ContinuousWriter {
 
   override def createWriterFactory: MemoryWriterFactory = MemoryWriterFactory(outputMode)

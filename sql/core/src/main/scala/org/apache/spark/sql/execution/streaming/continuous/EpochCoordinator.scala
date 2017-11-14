@@ -17,9 +17,13 @@
 
 package org.apache.spark.sql.execution.streaming.continuous
 
+import scala.collection.mutable
+
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.execution.streaming.ContinuousExecution
 import org.apache.spark.sql.sources.v2.writer.{ContinuousWriter, WriterCommitMessage}
 import org.apache.spark.util.RpcUtils
 
@@ -29,6 +33,11 @@ case class CommitPartitionEpoch(
   message: WriterCommitMessage)
 
 case class GetCurrentEpoch()
+
+case class ReportPartitionOffset(
+  partitionId: Int,
+  epoch: Long,
+  offsetJson: String)
 
 /** Helper object used to create reference to [[EpochCoordinator]]. */
 object EpochCoordinatorRef extends Logging {
@@ -43,9 +52,10 @@ object EpochCoordinatorRef extends Logging {
   def forDriver(
       writer: ContinuousWriter,
       queryId: String,
+      session: SparkSession,
       env: SparkEnv): RpcEndpointRef = synchronized {
     try {
-      val coordinator = new EpochCoordinator(writer, queryId, env.rpcEnv)
+      val coordinator = new EpochCoordinator(writer, session, env.rpcEnv)
       val coordinatorRef = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
       logInfo("Registered EpochCoordinator endpoint")
       coordinatorRef
@@ -64,20 +74,44 @@ object EpochCoordinatorRef extends Logging {
   }
 }
 
-class EpochCoordinator(writer: ContinuousWriter, queryId: String, override val rpcEnv: RpcEnv)
+class EpochCoordinator(writer: ContinuousWriter, session: SparkSession, override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
 
   private val startTime = System.currentTimeMillis()
 
+  private val latestCommittedEpoch = 0
+
+  // (epoch, partition) -> message
+  // This is small enough that we don't worry too much about optimizing the shape of the structure.
+  private val partitionCommits =
+    mutable.Map[(Long, Int), WriterCommitMessage]()
+
+  private def storeWriterCommit(epoch: Long, partition: Int, message: WriterCommitMessage): Unit = {
+    if (!partitionCommits.isDefinedAt((epoch, partition))) {
+      partitionCommits.put((epoch, partition), message)
+      val thisEpochCommits =
+        partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
+      if (thisEpochCommits.size == 2) {
+        logError(s"Epoch $epoch has received commits from all partitions. Committing to writer.")
+        writer.commit(epoch, thisEpochCommits.toArray)
+      }
+    }
+  }
+
   override def receive: PartialFunction[Any, Unit] = {
     case CommitPartitionEpoch(partitionId, epoch, message) =>
       logError(s"Got commit from partition $partitionId at epoch $epoch: $message")
-      writer.commit(epoch, Seq(message).toArray)
+      storeWriterCommit(epoch, partitionId, message)
+    case ReportPartitionOffset(partitionId, epoch, offsetJson) =>
+      val streams = session.streams
+      val query = streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+      query.addEpochOffset(partitionId, epoch, offsetJson)
+      logError(s"Got offset from partition $partitionId at epoch $epoch: $offsetJson")
   }
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case GetCurrentEpoch() =>
-      val epoch = (System.currentTimeMillis() - startTime) / 500
+      val epoch = (System.currentTimeMillis() - startTime) / 999
       logDebug(s"Epoch $epoch")
       context.reply(epoch)
   }

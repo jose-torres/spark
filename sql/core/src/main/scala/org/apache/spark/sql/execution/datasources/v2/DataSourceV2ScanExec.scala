@@ -76,7 +76,7 @@ class RowToUnsafeRowReadTask(rowReadTask: ReadTask[Row], schema: StructType)
   }
 }
 
-class RowToUnsafeDataReader(rowReader: DataReader[Row], encoder: ExpressionEncoder[Row])
+class RowToUnsafeDataReader(val rowReader: DataReader[Row], encoder: ExpressionEncoder[Row])
   extends DataReader[UnsafeRow] {
 
   override def next: Boolean = rowReader.next

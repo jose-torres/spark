@@ -21,9 +21,9 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.execution.streaming.Offset
+import org.apache.spark.sql.execution.streaming.{LongOffset, Offset}
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceV2, DataSourceV2Options}
-import org.apache.spark.sql.sources.v2.reader.{ContinuousReader, DataReader, DataSourceV2Reader, ReadTask}
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.types.{LongType, StructField, StructType, TimestampType}
 
 object ContinuousRateStreamSource {
@@ -33,6 +33,7 @@ object ContinuousRateStreamSource {
 
 class ContinuousRateStreamSource extends DataSourceV2 with ContinuousReadSupport {
   override def createContinuousReader(
+      offset: java.util.Optional[Offset],
       schema: java.util.Optional[StructType],
       options: DataSourceV2Options): ContinuousRateStreamReader = {
     new ContinuousRateStreamReader(options)
@@ -53,32 +54,34 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
   }
 
   override def createReadTasks(): java.util.List[ReadTask[Row]] = {
-    val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("1").toInt
-    val rowsPerSecond = options.get(ContinuousRateStreamSource.ROWS_PER_SECOND).orElse("5").toLong
+    val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("2").toInt
+    val rowsPerSecond = options.get(ContinuousRateStreamSource.ROWS_PER_SECOND).orElse("6").toLong
 
     val start = 0L
     val perPartitionRate = rowsPerSecond.toDouble / numPartitions.toDouble
 
     Range(0, numPartitions).map { n =>
       // Have each partition handle a different n mod numPartitions slice.
-      RateStreamReadTask(start + n, numPartitions, perPartitionRate).asInstanceOf[ReadTask[Row]]
+      RateStreamReadTask(start, n, numPartitions, perPartitionRate).asInstanceOf[ReadTask[Row]]
     }.asJava
   }
 }
 
-case class RateStreamReadTask(startValue: Long, increment: Long, rowsPerSecond: Double)
+case class RateStreamReadTask(
+    startValue: Long, partitionIndex: Int, increment: Long, rowsPerSecond: Double)
   extends ReadTask[Row] {
   override def createDataReader(): DataReader[Row] =
-    new RateStreamDataReader(startValue, increment, rowsPerSecond.toLong)
+    new RateStreamDataReader(startValue, partitionIndex, increment, rowsPerSecond.toLong)
 }
 
-class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Long)
-  extends DataReader[Row] {
+class RateStreamDataReader(
+    startValue: Long, partitionIndex: Int, increment: Long, rowsPerSecond: Long)
+  extends ContinuousDataReader[Row] {
 
   private var nextReadTime = 0L
   private var numReadRows = 0L
 
-  private var currentValue = startValue
+  private var currentValue = startValue + partitionIndex
   private var currentRow: Row = null
 
   override def next(): Boolean = {
@@ -86,23 +89,29 @@ class RateStreamDataReader(startValue: Long, increment: Long, rowsPerSecond: Lon
     if (currentRow == null) nextReadTime = System.currentTimeMillis() + 1000
 
     if (numReadRows == rowsPerSecond) {
-      // Spin until we reach the next second.
-      while (System.currentTimeMillis < nextReadTime) {}
+      // Sleep until we reach the next second.
+      while (System.currentTimeMillis < nextReadTime) {
+        Thread.sleep(nextReadTime - System.currentTimeMillis)
+      }
       numReadRows = 0
       nextReadTime += 1000
     }
 
+    val nextReadTimeStamp =
+      DateTimeUtils.toJavaTimestamp(DateTimeUtils.fromMillis(nextReadTime))
     currentRow = Row(
       DateTimeUtils.toJavaTimestamp(DateTimeUtils.fromMillis(System.currentTimeMillis)),
       currentValue)
     currentValue += increment
     numReadRows += 1
 
-    print(s"VVVVVV $currentRow\n")
     true
   }
 
   override def get: Row = currentRow
 
   override def close(): Unit = {}
+
+  // We use the value corresponding to partition 0 as the global offset.
+  override def getOffset(): Offset = LongOffset(currentValue - partitionIndex)
 }

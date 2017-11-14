@@ -21,10 +21,11 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.execution.streaming.StreamExecution
-import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef, GetCurrentEpoch}
-import org.apache.spark.sql.sources.v2.reader.ReadTask
+import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef, GetCurrentEpoch, ReportPartitionOffset}
+import org.apache.spark.sql.sources.v2.reader.{ContinuousDataReader, ReadTask}
 
 class ContinuousDataSourceRDD(
     sc: SparkContext,
@@ -40,20 +41,25 @@ class ContinuousDataSourceRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[UnsafeRow] = {
     val reader = split.asInstanceOf[DataSourceRDDPartition].readTask.createDataReader()
     context.addTaskCompletionListener(_ => reader.close())
-    val epochEndpoint = EpochCoordinatorRef.forExecutor(
-      context.getLocalProperty(StreamExecution.QUERY_ID_KEY), SparkEnv.get)
     val iter = new Iterator[UnsafeRow] {
+      val epochEndpoint = EpochCoordinatorRef.forExecutor(
+        context.getLocalProperty(StreamExecution.QUERY_ID_KEY), SparkEnv.get)
       private[this] var valuePrepared = false
 
       private[this] var currentEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
 
       override def hasNext: Boolean = {
-        val wrappedResult = wrappedHasNext
         val newEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
         if (currentEpoch == newEpoch) {
-          wrappedResult
+          wrappedHasNext
         } else {
           currentEpoch = newEpoch
+          val offsetJson = reader match {
+            case r: RowToUnsafeDataReader =>
+              r.rowReader.asInstanceOf[ContinuousDataReader[Row]].getOffset().json
+            case _ => throw new IllegalStateException("must have ContinuousDataReader[Row]")
+          }
+          epochEndpoint.send(ReportPartitionOffset(context.partitionId(), newEpoch, offsetJson))
           false
         }
       }

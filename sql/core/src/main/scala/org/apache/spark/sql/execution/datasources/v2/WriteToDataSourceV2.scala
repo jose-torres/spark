@@ -62,14 +62,14 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
       val runTask = writer match {
         case w: ContinuousWriter =>
           // Set up RPC endpoint on the driver before running.
-          val queryId = w.getQueryId()
-          EpochCoordinatorRef.forDriver(w, queryId, SparkEnv.get)
+          val queryId = w.getQueryId
           (context: TaskContext, iter: Iterator[InternalRow]) =>
             DataWritingSparkTask.runContinuous(writeTask, queryId, context, iter)
         case _ =>
           (context: TaskContext, iter: Iterator[InternalRow]) =>
             DataWritingSparkTask.run(writeTask, context, iter)
       }
+
       sparkContext.runJob(
         rdd,
         runTask,

@@ -34,6 +34,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.plans.logical.Range
 import org.apache.spark.sql.catalyst.streaming.InternalOutputModes
 import org.apache.spark.sql.execution.command.ExplainCommand
+import org.apache.spark.sql.execution.datasources.v2.WriteToDataSourceV2Exec
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.MemoryStreamV2
 import org.apache.spark.sql.execution.streaming.continuous.ContinuousRateStreamSource
@@ -84,15 +85,26 @@ class StreamSuite extends StreamTest {
       new ContinuousExecutionRelation(inputData, StructType(
         StructField("timestamp", TimestampType, false) ::
           StructField("value", LongType, false) :: Nil).toAttributes)
-      (sqlContext.sparkSession))
+      (sqlContext.sparkSession)).select('value)
+    val query = mapped.writeStream
+      .format("memory")
+      .queryName("memory")
+      .start()
+      .asInstanceOf[ContinuousExecution]
+    query.awaitInitialization(streamingTimeout.toMillis)
 
-    testStream(mapped.select('value))(
-      StartStream(),
-      new ExternalAction {
-        override def runAction(): Unit = synchronized { wait(4500) }
-      },
-      CheckAnswer(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
-      StopStream)
+    val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
+      .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
+      .sink
+
+    Thread.sleep(4200)
+    assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 20).sorted.map(Row(_)))
+
+    query.stop()
+    // make sure jobs are stopped
+    eventually(timeout(streamingTimeout)) {
+      assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
+    }
   }
 
   test("join") {
