@@ -17,15 +17,70 @@
 
 package org.apache.spark.sql.execution.datasources.v2
 
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
+import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.execution.streaming.StreamExecution
-import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef, GetCurrentEpoch, ReportPartitionOffset}
-import org.apache.spark.sql.sources.v2.reader.{ContinuousDataReader, ReadTask}
+import org.apache.spark.sql.execution.streaming.{MemoryWriterCommitMessage, ProcessingTimeExecutor, StreamExecution}
+import org.apache.spark.sql.execution.streaming.continuous._
+import org.apache.spark.sql.sources.v2.reader.{ContinuousDataReader, DataReader, ReadTask}
+import org.apache.spark.sql.streaming.ProcessingTime
+import org.apache.spark.util.SystemClock
+
+// This can't be a structural type because we need to mutate its atomic vars.
+class ContinuousDataSourceRDDIter(
+    startEpoch: Long,
+    epochEndpoint: RpcEndpointRef,
+    context: TaskContext,
+    reader: DataReader[UnsafeRow])
+  extends Iterator[UnsafeRow] {
+  private[this] var valuePrepared = false
+
+  var currentEpoch = new AtomicLong(startEpoch)
+
+  var outputMarker = new AtomicBoolean(false)
+
+  override def hasNext: Boolean = {
+    // If we're supposed to output a marker,
+    //  * Report the current underlying row as the start of the next epoch.
+    //  * Reset the outputMarker flag. (TODO this isn't the right place maybe)
+    //  * Propagate hasNext = false (our marker boundary) to the writer.
+    if (outputMarker.getAndSet(false)) {
+      val offsetJson = reader match {
+        case r: RowToUnsafeDataReader =>
+          r.rowReader.asInstanceOf[ContinuousDataReader[Row]].getOffset().json
+        case _ => throw new IllegalStateException("must have ContinuousDataReader[Row]")
+      }
+      epochEndpoint.send(ReportPartitionOffset(
+        context.partitionId(), currentEpoch.get(), offsetJson))
+      return false
+    }
+
+    wrappedHasNext
+  }
+
+  // Check whether the wrapped task has next.
+  // We call this from next() to avoid doing the epoch check there.
+  private def wrappedHasNext: Boolean = {
+    if (!valuePrepared) {
+      valuePrepared = reader.next()
+    }
+    valuePrepared
+  }
+
+  override def next(): UnsafeRow = {
+    if (!wrappedHasNext) {
+      throw new java.util.NoSuchElementException("End of stream")
+    }
+    valuePrepared = false
+    reader.get()
+  }
+}
 
 class ContinuousDataSourceRDD(
     sc: SparkContext,
@@ -41,46 +96,46 @@ class ContinuousDataSourceRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[UnsafeRow] = {
     val reader = split.asInstanceOf[DataSourceRDDPartition].readTask.createDataReader()
     context.addTaskCompletionListener(_ => reader.close())
-    val iter = new Iterator[UnsafeRow] {
-      val epochEndpoint = EpochCoordinatorRef.forExecutor(
-        context.getLocalProperty(StreamExecution.QUERY_ID_KEY), SparkEnv.get)
-      private[this] var valuePrepared = false
 
-      private[this] var currentEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
+    val epochEndpoint = EpochCoordinatorRef.forExecutor(
+      context.getLocalProperty(StreamExecution.QUERY_ID_KEY), SparkEnv.get)
+    val iter = new ContinuousDataSourceRDDIter(
+      epochEndpoint.askSync[Long](GetCurrentEpoch()), epochEndpoint, context, reader)
 
-      override def hasNext: Boolean = {
-        val newEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
-        if (currentEpoch == newEpoch) {
-          wrappedHasNext
-        } else {
-          currentEpoch = newEpoch
-          val offsetJson = reader match {
-            case r: RowToUnsafeDataReader =>
-              r.rowReader.asInstanceOf[ContinuousDataReader[Row]].getOffset().json
-            case _ => throw new IllegalStateException("must have ContinuousDataReader[Row]")
+    val epochPollThread = new Thread(new Runnable {
+      override def run: Unit = {
+        ProcessingTimeExecutor(ProcessingTime(900), new SystemClock())
+          .execute { () =>
+            if (context.isInterrupted()) {
+              return
+            } else {
+              val newEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
+              val currentEpoch = iter.currentEpoch.getAndSet(newEpoch)
+              LocalCurrentEpochs.epoch = newEpoch
+              if (currentEpoch != newEpoch) {
+                val oldMarkerState = iter.outputMarker.getAndSet(true)
+                logError(s"Set marker for epoch $newEpoch")
+                // TODO this isn't synchronized right
+                // we need to ensure this comes before next writer commit I think
+                // we probably need to move the whole thing to writer
+                /* if (oldMarkerState) {
+                  val commit = CommitPartitionEpoch(
+                    context.partitionId(),
+                    currentEpoch,
+                    MemoryWriterCommitMessage(context.partitionId(), Seq()))
+                  epochEndpoint.send(commit)
+                } */
+              }
+
+              // do next trigger
+              true
+            }
           }
-          epochEndpoint.send(ReportPartitionOffset(context.partitionId(), newEpoch, offsetJson))
-          false
-        }
       }
+    })
 
-      // Check whether the wrapped task has next.
-      // We call this from next() to avoid doing the epoch check there.
-      private def wrappedHasNext: Boolean = {
-        if (!valuePrepared) {
-          valuePrepared = reader.next()
-        }
-        valuePrepared
-      }
-
-      override def next(): UnsafeRow = {
-        if (!wrappedHasNext) {
-          throw new java.util.NoSuchElementException("End of stream")
-        }
-        valuePrepared = false
-        reader.get()
-      }
-    }
+    epochPollThread.setDaemon(true)
+    epochPollThread.start()
     new InterruptibleIterator(context, iter)
   }
 

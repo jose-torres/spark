@@ -17,13 +17,16 @@
 
 package org.apache.spark.sql.execution.streaming.continuous
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.collection.mutable
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.execution.streaming.ContinuousExecution
+import org.apache.spark.sql.execution.streaming.{ContinuousExecution, SerializedOffset}
+import org.apache.spark.sql.sources.v2.reader.ContinuousReader
 import org.apache.spark.sql.sources.v2.writer.{ContinuousWriter, WriterCommitMessage}
 import org.apache.spark.util.RpcUtils
 
@@ -39,6 +42,17 @@ case class ReportPartitionOffset(
   epoch: Long,
   offsetJson: String)
 
+// Should be used only by ContinuousExecution during initialization.
+case class SetEpoch(epoch: Long)
+
+// Should be used only by ContinuousExecution during epoch advancement.
+case class IncrementAndGetEpoch()
+
+
+object LocalCurrentEpochs {
+  var epoch: Long = 0
+}
+
 /** Helper object used to create reference to [[EpochCoordinator]]. */
 object EpochCoordinatorRef extends Logging {
 
@@ -51,19 +65,18 @@ object EpochCoordinatorRef extends Logging {
    */
   def forDriver(
       writer: ContinuousWriter,
+      reader: ContinuousReader,
       queryId: String,
       session: SparkSession,
       env: SparkEnv): RpcEndpointRef = synchronized {
     try {
-      val coordinator = new EpochCoordinator(writer, session, env.rpcEnv)
-      val coordinatorRef = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
+      val coordinator = new EpochCoordinator(writer, reader, session, env.rpcEnv)
+      val ref = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
       logInfo("Registered EpochCoordinator endpoint")
-      coordinatorRef
+      ref
     } catch {
       case e: IllegalArgumentException =>
-        val rpcEndpointRef = RpcUtils.makeDriverRef(endpointName(queryId), env.conf, env.rpcEnv)
-        logDebug("Retrieved existing EpochCoordinator endpoint")
-        rpcEndpointRef
+        forExecutor(queryId, env)
     }
   }
 
@@ -74,26 +87,41 @@ object EpochCoordinatorRef extends Logging {
   }
 }
 
-class EpochCoordinator(writer: ContinuousWriter, session: SparkSession, override val rpcEnv: RpcEnv)
+class EpochCoordinator(writer: ContinuousWriter,
+                       reader: ContinuousReader,
+                       session: SparkSession,
+                       override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
 
-  private val startTime = System.currentTimeMillis()
-
   private val latestCommittedEpoch = 0
+
+  // Should only be mutated by the ContinuousExecution which created this coordinator.
+  val epoch = new AtomicLong(0)
 
   // (epoch, partition) -> message
   // This is small enough that we don't worry too much about optimizing the shape of the structure.
   private val partitionCommits =
     mutable.Map[(Long, Int), WriterCommitMessage]()
 
+  private val partitionOffsets =
+    mutable.Map[(Long, Int), String]()
+
   private def storeWriterCommit(epoch: Long, partition: Int, message: WriterCommitMessage): Unit = {
+    // TODO deduplicate and clean this logic
+    // we can't assume all the sequencing that's happening here
+    // TODO the underlying query commit interaction is broken; it will fail on things that we output
     if (!partitionCommits.isDefinedAt((epoch, partition))) {
       partitionCommits.put((epoch, partition), message)
       val thisEpochCommits =
         partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
-      if (thisEpochCommits.size == 3) {
-        logError(s"Epoch $epoch has received commits from all partitions. Committing to writer.")
+      val nextEpochOffsets =
+        partitionOffsets.collect { case ((e, _), o) if e == epoch + 1 => o }
+      if (thisEpochCommits.size == 3 && nextEpochOffsets.size == 3) {
+        logError(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+        // Sequencing is important - writer commits to epoch are required to be replayable
         writer.commit(epoch, thisEpochCommits.toArray)
+        val query = session.streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+        query.commit(epoch)
       }
     }
   }
@@ -101,18 +129,52 @@ class EpochCoordinator(writer: ContinuousWriter, session: SparkSession, override
   override def receive: PartialFunction[Any, Unit] = {
     case CommitPartitionEpoch(partitionId, epoch, message) =>
       logError(s"Got commit from partition $partitionId at epoch $epoch: $message")
-      storeWriterCommit(epoch, partitionId, message)
+      try {
+        storeWriterCommit(epoch, partitionId, message)
+      } catch {
+        case t: Throwable =>
+          print(s"EXCEPTION: $t\n")
+          throw t
+      }
+
     case ReportPartitionOffset(partitionId, epoch, offsetJson) =>
-      val streams = session.streams
-      val query = streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
-      query.addEpochOffset(partitionId, epoch, offsetJson)
-      logError(s"Got offset from partition $partitionId at epoch $epoch: $offsetJson")
+      try {
+        val streams = session.streams
+        val query = streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+        partitionOffsets.put((epoch, partitionId), offsetJson)
+        val thisEpochOffsets =
+          partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
+        if (thisEpochOffsets.size == 3) {
+          logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
+          query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
+        }
+        val previousEpochCommits =
+          partitionCommits.collect { case ((e, _), msg) if e == epoch - 1 => msg }
+        if (previousEpochCommits.size == 3) {
+          logError(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+          // Sequencing is important - writer commits to epoch are required to be replayable
+          writer.commit(epoch, previousEpochCommits.toArray)
+          val query = session.streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+          query.commit(epoch)
+        }
+      } catch {
+        case t: Throwable =>
+          print(s"EXCEPTION: $t\n")
+          throw t
+      }
   }
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case GetCurrentEpoch() =>
-      val epoch = (System.currentTimeMillis() - startTime) / 999
-      logDebug(s"Epoch $epoch")
-      context.reply(epoch)
+      val result = epoch.get
+      logDebug(s"Epoch $result")
+      context.reply(result)
+
+    case SetEpoch(newEpoch) =>
+      epoch.set(newEpoch)
+      context.reply(newEpoch)
+
+    case IncrementAndGetEpoch() =>
+      context.reply(epoch.incrementAndGet())
   }
 }

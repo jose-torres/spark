@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef}
+import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef, LocalCurrentEpochs}
 import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
@@ -70,6 +70,8 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
             DataWritingSparkTask.run(writeTask, context, iter)
       }
 
+      print(s"UUUUUU running job")
+      print(s"UUUUUU ${Thread.currentThread().getName}")
       sparkContext.runJob(
         rdd,
         runTask,
@@ -129,7 +131,6 @@ object DataWritingSparkTask extends Logging {
     val dataWriter = writeTask.createDataWriter(context.partitionId(), context.attemptNumber())
 
     var currentMsg: WriterCommitMessage = null
-    var epoch = 0
     do {
       // write the data and commit this writer.
       currentMsg = Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
@@ -144,12 +145,10 @@ object DataWritingSparkTask extends Logging {
         dataWriter.abort()
         logError(s"Writer for partition ${context.partitionId()} aborted.")
       })
-
       EpochCoordinatorRef.forExecutor(queryId, SparkEnv.get).send(
-        CommitPartitionEpoch(context.partitionId(), epoch, currentMsg)
+        CommitPartitionEpoch(context.partitionId(), LocalCurrentEpochs.epoch - 1, currentMsg)
       )
-      epoch += 1
-    } while (true)
+    } while (!context.isInterrupted())
 
     currentMsg
   }

@@ -31,7 +31,7 @@ import scala.util.control.NonFatal
 import com.google.common.util.concurrent.UncheckedExecutionException
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.SparkEnv
+import org.apache.spark.{SparkContext, SparkEnv}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
@@ -40,10 +40,10 @@ import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.execution.command.StreamingExplainCommand
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, WriteToDataSourceV2}
-import org.apache.spark.sql.execution.streaming.continuous.EpochCoordinatorRef
+import org.apache.spark.sql.execution.streaming.continuous.{EpochCoordinatorRef, IncrementAndGetEpoch, SetEpoch}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.v2._
-import org.apache.spark.sql.sources.v2.reader.DataSourceV2Reader
+import org.apache.spark.sql.sources.v2.reader.{ContinuousReader, DataSourceV2Reader}
 import org.apache.spark.sql.streaming._
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.{Clock, UninterruptibleThread, Utils}
@@ -70,6 +70,8 @@ class ContinuousExecution(
   extends StreamingQuery with ProgressReporter with Logging {
 
   import org.apache.spark.sql.streaming.StreamingQueryListener._
+
+  print("BBBBBBB newInstance\n\n\n\n")
 
   private val pollingDelayMs = sparkSession.sessionState.conf.streamingPollingDelay
 
@@ -154,9 +156,11 @@ class ContinuousExecution(
   }
 
   private val triggerExecutor = trigger match {
-    case t: ProcessingTime => ProcessingTimeExecutor(t, triggerClock)
+    case _ => ProcessingTimeExecutor(ProcessingTime(999), triggerClock)
+    // TODO input
+    /* case t: ProcessingTime => ProcessingTimeExecutor(t, triggerClock)
     case OneTimeTrigger => OneTimeExecutor()
-    case _ => throw new IllegalStateException(s"Unknown type of trigger: $trigger")
+    case _ => throw new IllegalStateException(s"Unknown type of trigger: $trigger") */
   }
 
   /** Defines the internal state of execution */
@@ -180,15 +184,19 @@ class ContinuousExecution(
    * [[org.apache.spark.util.UninterruptibleThread]] to workaround KAFKA-1894: interrupting a
    * running `KafkaConsumer` may cause endless loop.
    */
-  val streamExecutionThread =
+  lazy val streamExecutionThread = {
+    print("\n\n\nYYYYYYYY new stream\n\n\n")
     new StreamExecutionThread(s"stream execution thread for $prettyIdString") {
       override def run(): Unit = {
         // To fix call site like "run at <unknown>:0", we bridge the call site from the caller
         // thread to this micro batch thread
+        print("TTTTTT runStream")
         sparkSession.sparkContext.setCallSite(callSite)
         runContinuous()
+        print("DDDDDD end of thread")
       }
     }
+  }
 
   private val initializationLatch = new CountDownLatch(1)
   private val startLatch = new CountDownLatch(1)
@@ -266,56 +274,17 @@ class ContinuousExecution(
       sparkSessionToRunBatches.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")
       // Disable cost-based join optimization as we do not want stateful operations to be rearranged
       sparkSessionToRunBatches.conf.set(SQLConf.CBO_ENABLED.key, "false")
+      print(s"UUUUUU ${Thread.currentThread().getName}")
 
       if (state.compareAndSet(INITIALIZING, ACTIVE)) {
         // Unblock `awaitInitialization`
         initializationLatch.countDown()
 
         val startOffsets = getStartOffsets(sparkSessionToRunBatches)
+        logError(s"Start offsets AAAAAAA: $startOffsets")
         sparkSession.sparkContext.setJobDescription(getDescriptionString)
         logDebug(s"Stream running from $committedOffsets")
         runFromOffsets(startOffsets, sparkSessionToRunBatches)
-
-        // triggerExecutor.execute(() => {
-          // TODO change epoch
-          /* startTrigger()
-
-          if (isActive) {
-            reportTimeTaken("triggerExecution") {
-              if (currentBatchId < 0) {
-                // We'll do this initialization only once
-                populateStartOffsets(sparkSessionToRunBatches)
-                sparkSession.sparkContext.setJobDescription(getDescriptionString)
-                logDebug(s"Stream running from $committedOffsets to $availableOffsets")
-              } else {
-                constructNextBatch()
-              }
-              if (dataAvailable) {
-                currentStatus = currentStatus.copy(isDataAvailable = true)
-                updateStatusMessage("Processing new data")
-                runBatch(sparkSessionToRunBatches)
-              }
-            }
-            // Report trigger as finished and construct progress object.
-            finishTrigger(dataAvailable)
-            if (dataAvailable) {
-              // Update committed offsets.
-              batchCommitLog.add(currentBatchId)
-              committedOffsets ++= availableOffsets
-              logDebug(s"batch ${currentBatchId} committed")
-              // We'll increase currentBatchId after we complete processing current batch's data
-              currentBatchId += 1
-              sparkSession.sparkContext.setJobDescription(getDescriptionString)
-            } else {
-              currentStatus = currentStatus.copy(isDataAvailable = false)
-              updateStatusMessage("Waiting for data to arrive")
-              Thread.sleep(pollingDelayMs)
-            }
-          }
-          updateStatusMessage("Waiting for next trigger")
-          isActive */
-        //  true
-        // })
         updateStatusMessage("Stopped")
       } else {
         // `stop()` is already called. Let `finally` finish the cleanup.
@@ -380,8 +349,10 @@ class ContinuousExecution(
               logWarning(s"Cannot delete $checkpointPath", e)
           }
         }
+        print("EEEEEE no exception")
       } finally {
         terminationLatch.countDown()
+        print("FFFFFF unlatched")
       }
     }
   }
@@ -437,7 +408,6 @@ class ContinuousExecution(
   private def getStartOffsets(sparkSessionToRunBatches: SparkSession): OffsetSeq = {
     offsetLog.getLatest() match {
       case Some((latestEpochId, nextOffsets)) =>
-        // Begin the latest epoch in the offset log, which is the latest uncommitted epoch.
         currentEpochId = latestEpochId
         // Initialize committed offsets to the second latest batch id in the offset log, which
         // is the latest committed epoch.
@@ -472,7 +442,7 @@ class ContinuousExecution(
     val withNewSources = logicalPlan transform {
       case ContinuousExecutionRelation(source, output) =>
         val reader = source.createContinuousReader(
-          java.util.Optional.ofNullable(null),
+          java.util.Optional.ofNullable(offsets.offsets(0).orNull),
           java.util.Optional.empty[StructType](),
           DataSourceV2Options.empty())
         val newOutput = reader.readSchema().toAttributes
@@ -504,8 +474,9 @@ class ContinuousExecution(
       DataSourceV2Options.empty())
     val withSink = WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
 
-    // Use the parent session since it's where this query is registered.
-    EpochCoordinatorRef.forDriver(writer.get(), id.toString, sparkSession, SparkEnv.get)
+    val reader = withSink.collect {
+      case r: DataSourceV2Relation => r.reader.asInstanceOf[ContinuousReader]
+    }.head
 
     reportTimeTaken("queryPlanning") {
       lastExecution = new IncrementalExecution(
@@ -519,10 +490,43 @@ class ContinuousExecution(
       lastExecution.executedPlan // Force the lazy generation of execution plan
     }
 
-    print(s"CCCCC ${sparkSession.sparkContext.getExecutorIds()}")
+    // Use the parent Spark session since it's where this query is registered.
+    val epochEndpoint =
+      EpochCoordinatorRef.forDriver(writer.get(), reader, id.toString, sparkSession, SparkEnv.get)
+    epochEndpoint.askSync[Long](SetEpoch(currentEpochId))
+    val epochUpdateThread = new Thread(new Runnable {
+      override def run: Unit = {
+        triggerExecutor.execute(() => {
+          startTrigger()
 
-    reportTimeTaken("runContinuous") {
-      SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution)(lastExecution.toRdd)
+          if (isActive) {
+            currentEpochId = epochEndpoint.askSync[Long](IncrementAndGetEpoch())
+            logInfo(s"New epoch $currentEpochId is starting.")
+          }
+
+          isActive
+        })
+      }
+    })
+
+    try {
+      print(s"11111111 started")
+      epochUpdateThread.setDaemon(true)
+      epochUpdateThread.start()
+      print(s"2222222 epoch update")
+
+      reportTimeTaken("runContinuous") {
+        SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution)(lastExecution.toRdd)
+      }
+      print(s"33333333 execution")
+    } finally {
+      print(s"444444 finally started")
+      SparkEnv.get.rpcEnv.stop(epochEndpoint)
+
+      print(s"555555 deregistered")
+      epochUpdateThread.interrupt()
+      epochUpdateThread.join()
+      print(s"6666666 joined")
     }
   }
 
@@ -542,22 +546,30 @@ class ContinuousExecution(
     }
   }
 
-  def addEpochOffset(partition: Int, epoch: Long, offsetJson: String): Unit = {
+  def addOffset(
+      epoch: Long, reader: ContinuousReader, partitionOffsets: Seq[SerializedOffset]): Unit = {
     assert(sources.length == 1, "only one continuous source supported currently")
-    val serialized = SerializedOffset(offsetJson)
+
+    val globalOffset = reader.mergeOffsets(partitionOffsets.toArray)
     synchronized {
-      offsetLog.add(epoch, OffsetSeq.fill(serialized))
+      offsetLog.add(epoch, OffsetSeq.fill(globalOffset))
     }
   }
 
-  def commit(partition: Int, epoch: Long, offsetJson: String): Unit = {
-    assert(sources.length == 1, "only one continuous source supported currently")
-    val serialized = SerializedOffset(offsetJson)
-    synchronized {
-      offsetLog.add(epoch, OffsetSeq.fill(serialized))
-      committedOffsets ++= Seq(sources(0) -> serialized)
-      sources(0).commit(serialized)
+  def commit(epoch: Long): Unit = {
+    // TODO: actually make the exceptions stop
+    try {
+      assert(sources.length == 1, "only one continuous source supported currently")
+      synchronized {
+        val offset = offsetLog.get(epoch + 1).get.offsets(0).get
+        committedOffsets ++= Seq(sources(0) -> offset)
+      }
+    } catch {
+      case _: Throwable =>
     }
+
+    // TODO what happens if writer commit worked but this one failed? I think that the idempotency
+    // means we can run a batch between two offsets butn eed to check
   }
 
   /**
@@ -570,15 +582,20 @@ class ContinuousExecution(
     // Set the state to TERMINATED so that the batching thread knows that it was interrupted
     // intentionally
 
+    print(s"``````11111111")
     state.set(TERMINATED)
+    print(s"``````222222")
     if (streamExecutionThread.isAlive) {
+      print(s"``````3333333")
       sparkSession.sparkContext.cancelJobGroup(runId.toString)
       streamExecutionThread.interrupt()
       streamExecutionThread.join()
       // microBatchThread may spawn new jobs, so we need to cancel again to prevent a leak
       sparkSession.sparkContext.cancelJobGroup(runId.toString)
     }
-    logInfo(s"Query $prettyIdString was stopped")
+
+    print(s"``````444444444")
+    logError(s"Query $prettyIdString was stopped")
   }
 
   /** A flag to indicate that a batch has completed with no new data available. */

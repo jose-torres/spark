@@ -79,31 +79,63 @@ class StreamSuite extends StreamTest {
   }
 
   test("continuous source") {
-    val inputData = new ContinuousRateStreamSource
-    val mapped = Dataset.ofRows(
-      sqlContext.sparkSession,
-      new ContinuousExecutionRelation(inputData, StructType(
-        StructField("timestamp", TimestampType, false) ::
-          StructField("value", LongType, false) :: Nil).toAttributes)
-      (sqlContext.sparkSession)).select('value)
-    val query = mapped.writeStream
-      .format("memory")
-      .queryName("memory")
-      .start()
-      .asInstanceOf[ContinuousExecution]
-    query.awaitInitialization(streamingTimeout.toMillis)
+    withTempDir { checkpointDir =>
+      val inputData = new ContinuousRateStreamSource
+      val mapped = Dataset.ofRows(
+        sqlContext.sparkSession,
+        new ContinuousExecutionRelation(inputData, StructType(
+          StructField("timestamp", TimestampType, false) ::
+            StructField("value", LongType, false) :: Nil).toAttributes)
+        (sqlContext.sparkSession)).select('value)
+      val query = mapped.writeStream
+        .format("memory")
+        .queryName("memory")
+        .option("checkpointLocation", checkpointDir.getAbsolutePath)
+        .start()
+        .asInstanceOf[ContinuousExecution]
+      query.awaitInitialization(streamingTimeout.toMillis)
 
-    val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
-      .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
-      .sink
+      val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
+        .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
+        .sink
 
-    Thread.sleep(4200)
-    assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 21).sorted.map(Row(_)))
+      Thread.sleep(8000)
+      assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 45).sorted.map(Row(_)))
 
-    query.stop()
-    // make sure jobs are stopped
-    eventually(timeout(streamingTimeout)) {
-      assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
+      query.stop()
+      // make sure jobs are stopped
+      eventually(timeout(streamingTimeout)) {
+        System.out.flush()
+        assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
+      }
+
+      val newQuery = mapped.writeStream
+        .format("memory")
+        .queryName("memory22")
+        .option("checkpointLocation", checkpointDir.getAbsolutePath)
+        .start()
+        .asInstanceOf[ContinuousExecution]
+
+      print("GOT TO THE RIGHT POINT 000000000\n\n")
+      newQuery.awaitInitialization(streamingTimeout.toMillis)
+      Thread.sleep(8500)
+      print("GOT TO THE RIGHT POINT 111111111\n\n")
+      val newSink =
+        newQuery.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
+        .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
+        .sink
+      print("GOT TO THE RIGHT POINT 2222222222\n\n")
+      print("GOT TO THE RIGHT POINT OMG\n\n")
+      newQuery.stop()
+
+      // TODO new sink synchronization between 2 and omg breaking things
+      assert(newSink.allData.sortBy(_.getLong(0)) == scala.Range(45, 96).sorted.map(Row(_)))
+      // make sure jobs are stopped
+      eventually(timeout(streamingTimeout)) {
+        assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
+      }
+      // TODO: why do we need an extra line her to make the query actually stop?
+      assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 45).sorted.map(Row(_)))
     }
   }
 
