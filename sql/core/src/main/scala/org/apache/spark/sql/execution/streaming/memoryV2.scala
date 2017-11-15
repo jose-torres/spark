@@ -209,14 +209,16 @@ class MemorySinkV2 extends DataSourceV2
 
   /** Returns all rows that are stored in this [[Sink]]. */
   def allData: Seq[Row] = synchronized {
-    batches.map(_.data).flatten
+    batches.flatMap(_.data)
   }
 
   def latestBatchId: Option[Long] = synchronized {
     batches.lastOption.map(_.batchId)
   }
 
-  def latestBatchData: Seq[Row] = synchronized { batches.lastOption.toSeq.flatten(_.data) }
+  def latestBatchData: Seq[Row] = synchronized {
+    batches.lastOption.toSeq.flatten(_.data)
+  }
 
   def toDebugString: String = synchronized {
     batches.map { case AddedData(batchId, data) =>

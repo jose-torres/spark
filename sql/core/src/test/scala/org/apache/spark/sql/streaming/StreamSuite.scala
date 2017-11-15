@@ -99,8 +99,12 @@ class StreamSuite extends StreamTest {
         .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
         .sink
 
-      Thread.sleep(8000)
-      assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 45).sorted.map(Row(_)))
+      Thread.sleep(8500)
+      try {
+        assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 45).sorted.map(Row(_)))
+      } finally {
+        query.stop()
+      }
 
       query.stop()
       // make sure jobs are stopped
@@ -116,20 +120,20 @@ class StreamSuite extends StreamTest {
         .start()
         .asInstanceOf[ContinuousExecution]
 
-      print("GOT TO THE RIGHT POINT 000000000\n\n")
       newQuery.awaitInitialization(streamingTimeout.toMillis)
-      Thread.sleep(8500)
-      print("GOT TO THE RIGHT POINT 111111111\n\n")
+      Thread.sleep(8600)
       val newSink =
         newQuery.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
         .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
         .sink
-      print("GOT TO THE RIGHT POINT 2222222222\n\n")
-      print("GOT TO THE RIGHT POINT OMG\n\n")
-      newQuery.stop()
+      try {
+        assert(newSink.allData.sortBy(_.getLong(0)) == scala.Range(45, 96).sorted.map(Row(_)))
+      } finally {
+        newQuery.stop()
+      }
 
       // TODO new sink synchronization between 2 and omg breaking things
-      assert(newSink.allData.sortBy(_.getLong(0)) == scala.Range(45, 96).sorted.map(Row(_)))
+
       // make sure jobs are stopped
       eventually(timeout(streamingTimeout)) {
         assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)

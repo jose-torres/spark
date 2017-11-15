@@ -71,8 +71,6 @@ class ContinuousExecution(
 
   import org.apache.spark.sql.streaming.StreamingQueryListener._
 
-  print("BBBBBBB newInstance\n\n\n\n")
-
   private val pollingDelayMs = sparkSession.sessionState.conf.streamingPollingDelay
 
   val resolvedCheckpointRoot = {
@@ -185,15 +183,12 @@ class ContinuousExecution(
    * running `KafkaConsumer` may cause endless loop.
    */
   lazy val streamExecutionThread = {
-    print("\n\n\nYYYYYYYY new stream\n\n\n")
     new StreamExecutionThread(s"stream execution thread for $prettyIdString") {
       override def run(): Unit = {
         // To fix call site like "run at <unknown>:0", we bridge the call site from the caller
         // thread to this micro batch thread
-        print("TTTTTT runStream")
         sparkSession.sparkContext.setCallSite(callSite)
         runContinuous()
-        print("DDDDDD end of thread")
       }
     }
   }
@@ -274,7 +269,6 @@ class ContinuousExecution(
       sparkSessionToRunBatches.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")
       // Disable cost-based join optimization as we do not want stateful operations to be rearranged
       sparkSessionToRunBatches.conf.set(SQLConf.CBO_ENABLED.key, "false")
-      print(s"UUUUUU ${Thread.currentThread().getName}")
 
       if (state.compareAndSet(INITIALIZING, ACTIVE)) {
         // Unblock `awaitInitialization`
@@ -349,10 +343,8 @@ class ContinuousExecution(
               logWarning(s"Cannot delete $checkpointPath", e)
           }
         }
-        print("EEEEEE no exception")
       } finally {
         terminationLatch.countDown()
-        print("FFFFFF unlatched")
       }
     }
   }
@@ -412,6 +404,7 @@ class ContinuousExecution(
         // Initialize committed offsets to the second latest batch id in the offset log, which
         // is the latest committed epoch.
         // TODO this sequencing isn't right
+        // TODO we can't allow epoch to advance until we got offsets for the previous one
         if (latestEpochId != 0) {
           val secondLatestEpochId = offsetLog.get(latestEpochId - 1).getOrElse {
             throw new IllegalStateException(s"batch ${latestEpochId - 1} doesn't exist")
@@ -510,23 +503,17 @@ class ContinuousExecution(
     })
 
     try {
-      print(s"11111111 started")
       epochUpdateThread.setDaemon(true)
       epochUpdateThread.start()
-      print(s"2222222 epoch update")
 
       reportTimeTaken("runContinuous") {
         SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution)(lastExecution.toRdd)
       }
-      print(s"33333333 execution")
     } finally {
-      print(s"444444 finally started")
       SparkEnv.get.rpcEnv.stop(epochEndpoint)
 
-      print(s"555555 deregistered")
       epochUpdateThread.interrupt()
       epochUpdateThread.join()
-      print(s"6666666 joined")
     }
   }
 
@@ -581,20 +568,14 @@ class ContinuousExecution(
   override def stop(): Unit = {
     // Set the state to TERMINATED so that the batching thread knows that it was interrupted
     // intentionally
-
-    print(s"``````11111111")
     state.set(TERMINATED)
-    print(s"``````222222")
     if (streamExecutionThread.isAlive) {
-      print(s"``````3333333")
       sparkSession.sparkContext.cancelJobGroup(runId.toString)
       streamExecutionThread.interrupt()
       streamExecutionThread.join()
       // microBatchThread may spawn new jobs, so we need to cancel again to prevent a leak
       sparkSession.sparkContext.cancelJobGroup(runId.toString)
     }
-
-    print(s"``````444444444")
     logError(s"Query $prettyIdString was stopped")
   }
 

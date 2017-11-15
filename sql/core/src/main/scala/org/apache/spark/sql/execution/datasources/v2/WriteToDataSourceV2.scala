@@ -70,8 +70,6 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
             DataWritingSparkTask.run(writeTask, context, iter)
       }
 
-      print(s"UUUUUU running job")
-      print(s"UUUUUU ${Thread.currentThread().getName}")
       sparkContext.runJob(
         rdd,
         runTask,

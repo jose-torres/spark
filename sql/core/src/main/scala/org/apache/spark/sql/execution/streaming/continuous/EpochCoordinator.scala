@@ -138,6 +138,8 @@ class EpochCoordinator(writer: ContinuousWriter,
       }
 
     case ReportPartitionOffset(partitionId, epoch, offsetJson) =>
+
+      // TODO we can't allow epoch to advance until we got offsets for the previous one
       try {
         val streams = session.streams
         val query = streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
