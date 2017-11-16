@@ -47,6 +47,8 @@ public class DataSourceV2Options {
     }
   }
 
+  public Map<String, String> asMap() { new HashMap<String, String>(keyLowerCasedMap); }
+
   /**
    * Returns the option value to which the specified key is mapped, case-insensitively.
    */
