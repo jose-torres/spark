@@ -79,6 +79,8 @@ class StreamSuite extends StreamTest {
   }
 
   test("continuous source") {
+    // TODO: a race condition leading to committing the same epoch twice with different values is somewhere here!
+    // it showed up in a unit test run
     withTempDir { checkpointDir =>
       val inputData = new ContinuousRateStreamSource
       val mapped = Dataset.ofRows(

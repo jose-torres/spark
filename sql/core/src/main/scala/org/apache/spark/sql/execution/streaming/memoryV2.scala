@@ -198,7 +198,7 @@ class MemorySinkV2 extends DataSourceV2
       schema: StructType,
       mode: OutputMode,
       options: DataSourceV2Options): java.util.Optional[ContinuousWriter] = {
-    java.util.Optional.of(new ContinuousMemoryWriter(this, queryId, mode))
+    java.util.Optional.of(new ContinuousMemoryWriter(this, mode))
   }
 
   private case class AddedData(batchId: Long, data: Array[Row])
@@ -288,12 +288,10 @@ class MemoryWriter(sink: MemorySinkV2, batchId: Long, outputMode: OutputMode)
   }
 }
 
-class ContinuousMemoryWriter(val sink: MemorySinkV2, val queryId: String, outputMode: OutputMode)
+class ContinuousMemoryWriter(val sink: MemorySinkV2, outputMode: OutputMode)
   extends MemoryWriter(sink, -1, outputMode) with Logging with ContinuousWriter {
 
   override def createWriterFactory: MemoryWriterFactory = MemoryWriterFactory(outputMode)
-
-  override def getQueryId: String = queryId
 
   override def commit(epochId: Long, messages: Array[WriterCommitMessage]): Unit = {
     val newRows = messages.flatMap { message =>

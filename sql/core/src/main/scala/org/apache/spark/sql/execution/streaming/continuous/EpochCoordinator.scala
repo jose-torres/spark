@@ -67,7 +67,7 @@ object EpochCoordinatorRef extends Logging {
       queryId: String,
       session: SparkSession,
       env: SparkEnv): RpcEndpointRef = synchronized {
-    val coordinator = new EpochCoordinator(writer, reader, startEpoch, session, env.rpcEnv)
+    val coordinator = new EpochCoordinator(writer, reader, startEpoch, queryId, session, env.rpcEnv)
     val ref = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
     logInfo("Registered EpochCoordinator endpoint")
     ref
@@ -83,6 +83,7 @@ object EpochCoordinatorRef extends Logging {
 class EpochCoordinator(writer: ContinuousWriter,
                        reader: ContinuousReader,
                        startEpoch: Long,
+                       queryId: String,
                        session: SparkSession,
                        override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
@@ -114,7 +115,7 @@ class EpochCoordinator(writer: ContinuousWriter,
         logError(s"Epoch $epoch has received commits from all partitions. Committing globally.")
         // Sequencing is important - writer commits to epoch are required to be replayable
         writer.commit(epoch, thisEpochCommits.toArray)
-        val query = session.streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+        val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
         query.commit(epoch)
       }
     }
@@ -136,7 +137,7 @@ class EpochCoordinator(writer: ContinuousWriter,
       // TODO we can't allow epoch to advance until we got offsets for the previous one
       try {
         val streams = session.streams
-        val query = streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+        val query = streams.get(queryId).asInstanceOf[ContinuousExecution]
         partitionOffsets.put((epoch, partitionId), offsetJson)
         val thisEpochOffsets =
           partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
@@ -150,7 +151,7 @@ class EpochCoordinator(writer: ContinuousWriter,
           logError(s"Epoch $epoch has received commits from all partitions. Committing globally.")
           // Sequencing is important - writer commits to epoch are required to be replayable
           writer.commit(epoch, previousEpochCommits.toArray)
-          val query = session.streams.get(writer.getQueryId).asInstanceOf[ContinuousExecution]
+          val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
           query.commit(epoch)
         }
       } catch {

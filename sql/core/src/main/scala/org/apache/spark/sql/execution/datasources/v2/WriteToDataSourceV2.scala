@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.streaming.StreamExecution
 import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef, LocalCurrentEpochs}
 import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.types.StructType
@@ -61,10 +62,8 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
     try {
       val runTask = writer match {
         case w: ContinuousWriter =>
-          // Set up RPC endpoint on the driver before running.
-          val queryId = w.getQueryId
           (context: TaskContext, iter: Iterator[InternalRow]) =>
-            DataWritingSparkTask.runContinuous(writeTask, queryId, context, iter)
+            DataWritingSparkTask.runContinuous(writeTask, context, iter)
         case _ =>
           (context: TaskContext, iter: Iterator[InternalRow]) =>
             DataWritingSparkTask.run(writeTask, context, iter)
@@ -123,10 +122,10 @@ object DataWritingSparkTask extends Logging {
 
   def runContinuous(
      writeTask: DataWriterFactory[InternalRow],
-     queryId: String,
      context: TaskContext,
      iter: Iterator[InternalRow]): WriterCommitMessage = {
     val dataWriter = writeTask.createDataWriter(context.partitionId(), context.attemptNumber())
+    val queryId = context.getLocalProperty(StreamExecution.QUERY_ID_KEY)
 
     var currentMsg: WriterCommitMessage = null
     do {

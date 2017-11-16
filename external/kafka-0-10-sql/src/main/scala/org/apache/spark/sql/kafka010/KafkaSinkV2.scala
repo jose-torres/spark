@@ -46,13 +46,11 @@ class KafkaSinkV2 extends DataSourceV2 with ContinuousWriteSupport with Logging 
     KafkaWriter.validateQuery(
       schema.toAttributes, new java.util.HashMap[String, Object](producerParams.asJava), topic)
 
-    java.util.Optional.of(new KafkaWriter(queryId, topic, producerParams, schema))
+    java.util.Optional.of(new KafkaWriter(topic, producerParams, schema))
   }
 }
 
-class KafkaWriter(
-    val getQueryId: String, topic: Option[String],
-    producerParams: Map[String, String], schema: StructType)
+class KafkaWriter(topic: Option[String], producerParams: Map[String, String], schema: StructType)
   extends ContinuousWriter with SupportsWriteInternalRow {
 
   override def createInternalRowWriterFactory(): KafkaWriterFactory =
