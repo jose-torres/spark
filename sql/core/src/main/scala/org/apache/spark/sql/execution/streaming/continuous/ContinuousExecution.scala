@@ -40,7 +40,7 @@ import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.execution.command.StreamingExplainCommand
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, WriteToDataSourceV2}
-import org.apache.spark.sql.execution.streaming.continuous.{EpochCoordinatorRef, IncrementAndGetEpoch, SetEpoch}
+import org.apache.spark.sql.execution.streaming.continuous.{EpochCoordinatorRef, IncrementAndGetEpoch}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.v2._
 import org.apache.spark.sql.sources.v2.reader.{ContinuousReader, DataSourceV2Reader}
@@ -485,8 +485,8 @@ class ContinuousExecution(
 
     // Use the parent Spark session since it's where this query is registered.
     val epochEndpoint =
-      EpochCoordinatorRef.forDriver(writer.get(), reader, id.toString, sparkSession, SparkEnv.get)
-    epochEndpoint.askSync[Long](SetEpoch(currentEpochId))
+      EpochCoordinatorRef.create(
+        writer.get(), reader, currentEpochId, id.toString, sparkSession, SparkEnv.get)
     val epochUpdateThread = new Thread(new Runnable {
       override def run: Unit = {
         triggerExecutor.execute(() => {

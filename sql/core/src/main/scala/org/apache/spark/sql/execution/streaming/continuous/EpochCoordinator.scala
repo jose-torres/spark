@@ -42,9 +42,6 @@ case class ReportPartitionOffset(
   epoch: Long,
   offsetJson: String)
 
-// Should be used only by ContinuousExecution during initialization.
-case class SetEpoch(epoch: Long)
-
 // Should be used only by ContinuousExecution during epoch advancement.
 case class IncrementAndGetEpoch()
 
@@ -61,23 +58,19 @@ object EpochCoordinatorRef extends Logging {
   private def endpointName(queryId: String) = s"EpochCoordinator-$queryId"
 
   /**
-   * Create a reference to an [[EpochCoordinator]]
+   * Create a reference to a new [[EpochCoordinator]].
    */
-  def forDriver(
+  def create(
       writer: ContinuousWriter,
       reader: ContinuousReader,
+      startEpoch: Long,
       queryId: String,
       session: SparkSession,
       env: SparkEnv): RpcEndpointRef = synchronized {
-    try {
-      val coordinator = new EpochCoordinator(writer, reader, session, env.rpcEnv)
-      val ref = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
-      logInfo("Registered EpochCoordinator endpoint")
-      ref
-    } catch {
-      case e: IllegalArgumentException =>
-        forExecutor(queryId, env)
-    }
+    val coordinator = new EpochCoordinator(writer, reader, startEpoch, session, env.rpcEnv)
+    val ref = env.rpcEnv.setupEndpoint(endpointName(queryId), coordinator)
+    logInfo("Registered EpochCoordinator endpoint")
+    ref
   }
 
   def forExecutor(queryId: String, env: SparkEnv): RpcEndpointRef = synchronized {
@@ -89,14 +82,15 @@ object EpochCoordinatorRef extends Logging {
 
 class EpochCoordinator(writer: ContinuousWriter,
                        reader: ContinuousReader,
+                       startEpoch: Long,
                        session: SparkSession,
                        override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
 
   private val latestCommittedEpoch = 0
 
-  // Should only be mutated by the ContinuousExecution which created this coordinator.
-  val epoch = new AtomicLong(0)
+  // Should only be mutated by this coordinator's subthread.
+  private var currentDriverEpoch = startEpoch
 
   // (epoch, partition) -> message
   // This is small enough that we don't worry too much about optimizing the shape of the structure.
@@ -168,15 +162,12 @@ class EpochCoordinator(writer: ContinuousWriter,
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case GetCurrentEpoch() =>
-      val result = epoch.get
+      val result = currentDriverEpoch
       logDebug(s"Epoch $result")
       context.reply(result)
 
-    case SetEpoch(newEpoch) =>
-      epoch.set(newEpoch)
-      context.reply(newEpoch)
-
     case IncrementAndGetEpoch() =>
-      context.reply(epoch.incrementAndGet())
+      currentDriverEpoch += 1
+      context.reply(currentDriverEpoch)
   }
 }
