@@ -79,9 +79,6 @@ class StreamSuite extends StreamTest {
   }
 
   test("continuous source") {
-    // TODO: a race condition leading to committing the same epoch multiple times with different
-    // values is somewhere here!
-    // it showed up in a unit test run
     withTempDir { checkpointDir =>
       val inputData = new ContinuousRateStreamSource
       val mapped = Dataset.ofRows(
@@ -134,8 +131,6 @@ class StreamSuite extends StreamTest {
       } finally {
         newQuery.stop()
       }
-
-      // TODO new sink synchronization between 2 and omg breaking things
 
       // make sure jobs are stopped
       eventually(timeout(streamingTimeout)) {
