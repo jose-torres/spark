@@ -84,8 +84,6 @@ class EpochCoordinator(writer: ContinuousWriter,
                        override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
 
-  private val latestCommittedEpoch = 0
-
   // Should only be mutated by this coordinator's subthread.
   private var currentDriverEpoch = startEpoch
 
@@ -100,7 +98,6 @@ class EpochCoordinator(writer: ContinuousWriter,
   private def storeWriterCommit(epoch: Long, partition: Int, message: WriterCommitMessage): Unit = {
     // TODO deduplicate and clean this logic
     // we can't assume all the sequencing that's happening here
-    // TODO the underlying query commit interaction is broken; it will fail on things that we output
     if (!partitionCommits.isDefinedAt((epoch, partition))) {
       partitionCommits.put((epoch, partition), message)
       val thisEpochCommits =
@@ -123,31 +120,23 @@ class EpochCoordinator(writer: ContinuousWriter,
       storeWriterCommit(epoch, partitionId, message)
 
     case ReportPartitionOffset(partitionId, epoch, offsetJson) =>
-      print(s"Got epoch $epoch from partition $partitionId: $offsetJson\n")
-      // TODO we can't allow epoch to advance until we got offsets for the previous one
-      try {
-        val streams = session.streams
-        val query = streams.get(queryId).asInstanceOf[ContinuousExecution]
-        partitionOffsets.put((epoch, partitionId), offsetJson)
-        val thisEpochOffsets =
-          partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
-        if (thisEpochOffsets.size == 5) {
-          logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
-          query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
-        }
-        val previousEpochCommits =
-          partitionCommits.collect { case ((e, _), msg) if e == epoch - 1 => msg }
-        if (previousEpochCommits.size == 5) {
-          print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
-          // Sequencing is important - writer commits to epoch are required to be replayable
-          writer.commit(epoch, previousEpochCommits.toArray)
-          val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
-          query.commit(epoch)
-        }
-      } catch {
-        case t: Throwable =>
-          print(s"EXCEPTION: ${t.getMessage()}\n")
-          throw t
+      val streams = session.streams
+      val query = streams.get(queryId).asInstanceOf[ContinuousExecution]
+      partitionOffsets.put((epoch, partitionId), offsetJson)
+      val thisEpochOffsets =
+        partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
+      if (thisEpochOffsets.size == 5) {
+        logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
+        query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
+      }
+      val previousEpochCommits =
+        partitionCommits.collect { case ((e, _), msg) if e == epoch - 1 => msg }
+      if (previousEpochCommits.size == 5) {
+        print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+        // Sequencing is important - writer commits to epoch are required to be replayable
+        writer.commit(epoch, previousEpochCommits.toArray)
+        val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
+        query.commit(epoch)
       }
   }
 
