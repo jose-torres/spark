@@ -99,6 +99,8 @@ class StreamSuite extends StreamTest {
         .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
         .sink
 
+      // TODO: get a reliable test harness, rather than sleeping random amounts of time and hoping
+      // the stream runs for exactly the right amount.
       Thread.sleep(8500)
       try {
         assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 40).sorted.map(Row(_)))
