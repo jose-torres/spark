@@ -84,6 +84,9 @@ class EpochCoordinator(writer: ContinuousWriter,
                        override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
 
+  // TODO split this up and get it from the actual plan
+  private val numPartitions = 5
+
   // Should only be mutated by this coordinator's subthread.
   private var currentDriverEpoch = startEpoch
 
@@ -104,7 +107,7 @@ class EpochCoordinator(writer: ContinuousWriter,
         partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
       val nextEpochOffsets =
         partitionOffsets.collect { case ((e, _), o) if e == epoch + 1 => o }
-      if (thisEpochCommits.size == 5 && nextEpochOffsets.size == 5) {
+      if (thisEpochCommits.size == numPartitions && nextEpochOffsets.size == numPartitions) {
         print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
         // Sequencing is important - writer commits to epoch are required to be replayable
         writer.commit(epoch, thisEpochCommits.toArray)
@@ -125,13 +128,13 @@ class EpochCoordinator(writer: ContinuousWriter,
       partitionOffsets.put((epoch, partitionId), offsetJson)
       val thisEpochOffsets =
         partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
-      if (thisEpochOffsets.size == 5) {
+      if (thisEpochOffsets.size == numPartitions) {
         logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
         query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
       }
       val previousEpochCommits =
         partitionCommits.collect { case ((e, _), msg) if e == epoch - 1 => msg }
-      if (previousEpochCommits.size == 5) {
+      if (previousEpochCommits.size == numPartitions) {
         print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
         // Sequencing is important - writer commits to epoch are required to be replayable
         writer.commit(epoch, previousEpochCommits.toArray)
