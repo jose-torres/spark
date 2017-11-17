@@ -458,7 +458,7 @@ class KafkaSourceSuite extends KafkaSourceTest {
     )
   }
 
-  test("starting offset is latest by default") {
+  test("continuous") {
     val topic = newTopic()
     testUtils.createTopic(topic, partitions = 5)
     testUtils.sendMessages(topic, Array("0"))

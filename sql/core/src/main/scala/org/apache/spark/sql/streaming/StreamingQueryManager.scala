@@ -292,7 +292,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
       outputMode: OutputMode,
       useTempCheckpointLocation: Boolean = false,
       recoverFromCheckpointLocation: Boolean = true,
-      trigger: Trigger = ProcessingTime(0),
+      trigger: Trigger,
       triggerClock: Clock = new SystemClock()): StreamingQuery = {
     val query = createQuery(
       userSpecifiedName,
