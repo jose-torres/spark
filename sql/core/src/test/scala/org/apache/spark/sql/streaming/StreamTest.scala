@@ -395,6 +395,7 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
                   None,
                   Some(metadataRoot),
                   stream,
+                  Map(),
                   sink,
                   outputMode,
                   trigger = trigger,

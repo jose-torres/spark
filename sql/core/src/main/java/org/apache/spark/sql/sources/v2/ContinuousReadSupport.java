@@ -17,5 +17,5 @@ public interface ContinuousReadSupport extends BaseStreamingSource {
    * @param options the options for the returned data source reader, which is an immutable
    *                case-insensitive string-to-string map.
    */
-  DataSourceV2Reader createContinuousReader(Optional<Offset> offset, Optional<StructType> schema, DataSourceV2Options options);
+  DataSourceV2Reader createContinuousReader(Optional<Offset> offset, Optional<StructType> schema, String metadataPath, DataSourceV2Options options);
 }

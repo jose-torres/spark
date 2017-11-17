@@ -79,13 +79,14 @@ class StreamSuite extends StreamTest {
   }
 
   test("continuous source") {
-    // TODO: a race condition leading to committing the same epoch twice with different values is somewhere here!
+    // TODO: a race condition leading to committing the same epoch multiple times with different
+    // values is somewhere here!
     // it showed up in a unit test run
     withTempDir { checkpointDir =>
       val inputData = new ContinuousRateStreamSource
       val mapped = Dataset.ofRows(
         sqlContext.sparkSession,
-        new ContinuousExecutionRelation(inputData, StructType(
+        new ContinuousExecutionRelation(inputData, Map(), StructType(
           StructField("timestamp", TimestampType, false) ::
             StructField("value", LongType, false) :: Nil).toAttributes)
         (sqlContext.sparkSession)).select('value)
@@ -103,7 +104,7 @@ class StreamSuite extends StreamTest {
 
       Thread.sleep(8500)
       try {
-        assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 45).sorted.map(Row(_)))
+        assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 40).sorted.map(Row(_)))
       } finally {
         query.stop()
       }
@@ -129,7 +130,7 @@ class StreamSuite extends StreamTest {
         .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
         .sink
       try {
-        assert(newSink.allData.sortBy(_.getLong(0)) == scala.Range(45, 96).sorted.map(Row(_)))
+        assert(newSink.allData.sortBy(_.getLong(0)) == scala.Range(40, 85).sorted.map(Row(_)))
       } finally {
         newQuery.stop()
       }
@@ -140,8 +141,6 @@ class StreamSuite extends StreamTest {
       eventually(timeout(streamingTimeout)) {
         assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
       }
-      // TODO: why do we need an extra line her to make the query actually stop?
-      assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 45).sorted.map(Row(_)))
     }
   }
 

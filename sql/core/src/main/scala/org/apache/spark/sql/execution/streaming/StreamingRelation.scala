@@ -55,6 +55,21 @@ case class StreamingRelation(dataSource: DataSource, sourceName: String, output:
   )
 }
 
+case class ContinuousRelation(
+    dataSource: ContinuousReadSupport,
+    sourceName: String,
+    extraOptions: Map[String, String],
+    output: Seq[Attribute])
+  extends LeafNode {
+  override def isStreaming: Boolean = true
+  override def toString: String = sourceName
+
+  // TODO: can we get the conf here somehow?
+  override def computeStats(): Statistics = Statistics(
+    sizeInBytes = 0
+  )
+}
+
 /**
  * Used to link a streaming [[Source]] of data into a
  * [[org.apache.spark.sql.catalyst.plans.logical.LogicalPlan]].
@@ -99,6 +114,7 @@ case class StreamingExecutionRelationV2(
 
 case class ContinuousExecutionRelation(
     source: ContinuousReadSupport,
+    extraOptions: Map[String, String],
     output: Seq[Attribute])(session: SparkSession)
   extends LeafNode {
 

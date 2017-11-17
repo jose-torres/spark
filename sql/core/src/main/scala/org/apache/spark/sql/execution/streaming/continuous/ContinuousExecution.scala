@@ -62,6 +62,7 @@ class ContinuousExecution(
     override val name: String,
     private val checkpointRoot: String,
     analyzedPlan: LogicalPlan,
+    extraOptions: Map[String, String],
     val sink: ContinuousWriteSupport,
     val trigger: Trigger,
     val triggerClock: Clock,
@@ -133,24 +134,25 @@ class ContinuousExecution(
       "logicalPlan must be initialized in StreamExecutionThread " +
         s"but the current thread was ${Thread.currentThread}")
     var nextSourceId = 0L
-    val toExecutionRelationMap = MutableMap[StreamingRelation, ContinuousExecutionRelation]()
-    /* val _logicalPlan = analyzedPlan.transform {
-      case streamingRelation@StreamingRelation(dataSource, _, output) =>
-        toExecutionRelationMap.getOrElseUpdate(streamingRelation, {
-          // Materialize source to avoid creating it in every batch
+    val toExecutionRelationMap = MutableMap[ContinuousRelation, ContinuousExecutionRelation]()
+    val _logicalPlan = analyzedPlan.transform {
+      case r @ ContinuousRelation(dataSource, _, extraReaderOptions, output) =>
+        toExecutionRelationMap.getOrElseUpdate(r, {
+          // Materialize reader to avoid creating it in every batch
+          // TODO: actually materialize it
           val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
-          val source = dataSource.createSource(metadataPath)
+          val source = dataSource
           nextSourceId += 1
           // We still need to use the previous `output` instead of `source.schema` as attributes in
           // "df.logicalPlan" has already used attributes of the previous `output`.
-          StreamingExecutionRelation(source, output)(sparkSession)
+          ContinuousExecutionRelation(source, extraReaderOptions, output)(sparkSession)
         })
-    } */
-    sources = analyzedPlan.collect {
+    }
+    sources = _logicalPlan.collect {
       case s: ContinuousExecutionRelation => s.source
     }
     uniqueSources = sources.distinct
-    analyzedPlan
+    _logicalPlan
   }
 
   private val triggerExecutor = trigger match {
@@ -275,7 +277,6 @@ class ContinuousExecution(
         initializationLatch.countDown()
 
         val startOffsets = getStartOffsets(sparkSessionToRunBatches)
-        logError(s"Start offsets AAAAAAA: $startOffsets")
         sparkSession.sparkContext.setJobDescription(getDescriptionString)
         logDebug(s"Stream running from $committedOffsets")
         runFromOffsets(startOffsets, sparkSessionToRunBatches)
@@ -433,11 +434,15 @@ class ContinuousExecution(
     val replacements = new ArrayBuffer[(Attribute, Attribute)]
     // Replace sources in the logical plan with data that has arrived since the last batch.
     val withNewSources = logicalPlan transform {
-      case ContinuousExecutionRelation(source, output) =>
+      case ContinuousExecutionRelation(source, extraReaderOptions, output) =>
+        // TODO multiple sources maybe?
+        val nextSourceId = 0
+        val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
         val reader = source.createContinuousReader(
           java.util.Optional.ofNullable(offsets.offsets(0).orNull),
           java.util.Optional.empty[StructType](),
-          DataSourceV2Options.empty())
+          metadataPath,
+          new DataSourceV2Options(extraReaderOptions.asJava))
         val newOutput = reader.readSchema().toAttributes
 
         assert(output.size == newOutput.size,
@@ -464,7 +469,7 @@ class ContinuousExecution(
       currentBatchId,
       triggerLogicalPlan.schema,
       outputMode,
-      DataSourceV2Options.empty())
+      new DataSourceV2Options(extraOptions.asJava))
     val withSink = WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
 
     val reader = withSink.collect {
@@ -483,7 +488,12 @@ class ContinuousExecution(
       lastExecution.executedPlan // Force the lazy generation of execution plan
     }
 
+    sparkSession.sparkContext.setLocalProperty(
+      ContinuousExecution.START_EPOCH_KEY, currentEpochId.toString)
+
     // Use the parent Spark session since it's where this query is registered.
+    // TODO: we should use runId for the endpoint to be safe against cross-contamination
+    // from failed runs
     val epochEndpoint =
       EpochCoordinatorRef.create(
         writer.get(), reader, currentEpochId, id.toString, sparkSession, SparkEnv.get)
@@ -672,4 +682,8 @@ class ContinuousExecution(
     Option(name).map(_ + "<br/>").getOrElse("") +
       s"id = $id<br/>runId = $runId<br/>batch = $batchDescription"
   }
+}
+
+object ContinuousExecution {
+  val START_EPOCH_KEY = "__continuous_start_epoch"
 }

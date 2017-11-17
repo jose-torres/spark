@@ -29,28 +29,7 @@ import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.{BinaryType, StringType, StructType}
 
-class KafkaSinkV2 extends DataSourceV2 with ContinuousWriteSupport with Logging {
-  override def createContinuousWriter(
-      queryId: String,
-      batchId: Long,
-      schema: StructType,
-      mode: OutputMode,
-      options: DataSourceV2Options): java.util.Optional[ContinuousWriter] = {
-    import scala.collection.JavaConverters._
-
-    val spark = SparkSession.getActiveSession.get
-    val topic = Option(options.get(TOPIC_OPTION_KEY).orElse(null)).map(_.trim)
-    // We convert the options argument from V2 -> Java map -> scala mutable -> scala immutable.
-    val producerParams = kafkaParamsForProducer(options.asMap.asScala.toMap)
-
-    KafkaWriter.validateQuery(
-      schema.toAttributes, new java.util.HashMap[String, Object](producerParams.asJava), topic)
-
-    java.util.Optional.of(new KafkaWriter(topic, producerParams, schema))
-  }
-}
-
-class KafkaWriter(topic: Option[String], producerParams: Map[String, String], schema: StructType)
+class KafkaWriterV2(topic: Option[String], producerParams: Map[String, String], schema: StructType)
   extends ContinuousWriter with SupportsWriteInternalRow {
 
   override def createInternalRowWriterFactory(): KafkaWriterFactory =

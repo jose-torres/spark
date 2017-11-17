@@ -46,10 +46,6 @@ case class ReportPartitionOffset(
 case class IncrementAndGetEpoch()
 
 
-object LocalCurrentEpochs {
-  var epoch: Long = 0
-}
-
 /** Helper object used to create reference to [[EpochCoordinator]]. */
 object EpochCoordinatorRef extends Logging {
 
@@ -111,8 +107,8 @@ class EpochCoordinator(writer: ContinuousWriter,
         partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
       val nextEpochOffsets =
         partitionOffsets.collect { case ((e, _), o) if e == epoch + 1 => o }
-      if (thisEpochCommits.size == 3 && nextEpochOffsets.size == 3) {
-        logError(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+      if (thisEpochCommits.size == 5 && nextEpochOffsets.size == 5) {
+        print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
         // Sequencing is important - writer commits to epoch are required to be replayable
         writer.commit(epoch, thisEpochCommits.toArray)
         val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
@@ -124,16 +120,10 @@ class EpochCoordinator(writer: ContinuousWriter,
   override def receive: PartialFunction[Any, Unit] = {
     case CommitPartitionEpoch(partitionId, epoch, message) =>
       logError(s"Got commit from partition $partitionId at epoch $epoch: $message")
-      try {
-        storeWriterCommit(epoch, partitionId, message)
-      } catch {
-        case t: Throwable =>
-          print(s"EXCEPTION: $t\n")
-          throw t
-      }
+      storeWriterCommit(epoch, partitionId, message)
 
     case ReportPartitionOffset(partitionId, epoch, offsetJson) =>
-
+      print(s"Got epoch $epoch from partition $partitionId: $offsetJson\n")
       // TODO we can't allow epoch to advance until we got offsets for the previous one
       try {
         val streams = session.streams
@@ -141,14 +131,14 @@ class EpochCoordinator(writer: ContinuousWriter,
         partitionOffsets.put((epoch, partitionId), offsetJson)
         val thisEpochOffsets =
           partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
-        if (thisEpochOffsets.size == 3) {
+        if (thisEpochOffsets.size == 5) {
           logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
           query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
         }
         val previousEpochCommits =
           partitionCommits.collect { case ((e, _), msg) if e == epoch - 1 => msg }
-        if (previousEpochCommits.size == 3) {
-          logError(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+        if (previousEpochCommits.size == 5) {
+          print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
           // Sequencing is important - writer commits to epoch are required to be replayable
           writer.commit(epoch, previousEpochCommits.toArray)
           val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
@@ -156,7 +146,7 @@ class EpochCoordinator(writer: ContinuousWriter,
         }
       } catch {
         case t: Throwable =>
-          print(s"EXCEPTION: $t\n")
+          print(s"EXCEPTION: ${t.getMessage()}\n")
           throw t
       }
   }

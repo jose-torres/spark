@@ -189,6 +189,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
       userSpecifiedName: Option[String],
       userSpecifiedCheckpointLocation: Option[String],
       df: DataFrame,
+      extraOptions: Map[String, String],
       sink: BaseStreamingSink,
       outputMode: OutputMode,
       useTempCheckpointLocation: Boolean,
@@ -238,12 +239,15 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
           "is not supported in streaming DataFrames/Datasets and will be disabled.")
     }
 
-    if (df.logicalPlan.find(_.isInstanceOf[ContinuousExecutionRelation]).isDefined) {
+    // TODO: correct this condition
+    if (df.logicalPlan.find(_.isInstanceOf[ContinuousExecutionRelation]).isDefined ||
+      df.logicalPlan.find(_.isInstanceOf[ContinuousRelation]).isDefined) {
       new ContinuousExecution(
         sparkSession,
         userSpecifiedName.orNull,
         checkpointLocation,
         analyzedPlan,
+        extraOptions,
         sink.asInstanceOf[ContinuousWriteSupport],
         trigger,
         triggerClock,
@@ -283,6 +287,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
       userSpecifiedName: Option[String],
       userSpecifiedCheckpointLocation: Option[String],
       df: DataFrame,
+      extraOptions: Map[String, String],
       sink: BaseStreamingSink,
       outputMode: OutputMode,
       useTempCheckpointLocation: Boolean = false,
@@ -293,6 +298,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
       userSpecifiedName,
       userSpecifiedCheckpointLocation,
       df,
+      extraOptions,
       sink,
       outputMode,
       useTempCheckpointLocation,

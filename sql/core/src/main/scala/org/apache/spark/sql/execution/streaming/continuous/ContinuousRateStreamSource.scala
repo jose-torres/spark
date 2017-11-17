@@ -43,6 +43,7 @@ class ContinuousRateStreamSource extends DataSourceV2 with ContinuousReadSupport
   override def createContinuousReader(
       offset: java.util.Optional[Offset],
       schema: java.util.Optional[StructType],
+      metadataPath: String,
       options: DataSourceV2Options): ContinuousRateStreamReader = {
     new ContinuousRateStreamReader(Option(offset.orElse(null)), options)
   }
@@ -57,7 +58,7 @@ class ContinuousRateStreamReader(offset: Option[Offset], options: DataSourceV2Op
   extends DataSourceV2Reader with ContinuousReader {
   implicit val defaultFormats: DefaultFormats = DefaultFormats
 
-  val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("3").toInt
+  val numPartitions = options.get(ContinuousRateStreamSource.NUM_PARTITIONS).orElse("5").toInt
   val rowsPerSecond = options.get(ContinuousRateStreamSource.ROWS_PER_SECOND).orElse("6").toLong
 
   override def mergeOffsets(offsets: Array[Offset]): Offset = {
@@ -118,9 +119,16 @@ class RateStreamDataReader(
   private var currentValue = startValue
   private var currentRow: Row = null
 
+  private var numQueuedMarkers = 0
+
   override def next(): Boolean = {
     // Set the timestamp for the first time.
     if (currentRow == null) nextReadTime = System.currentTimeMillis() + 1000
+
+    if (numQueuedMarkers > 0) synchronized {
+      numQueuedMarkers -= 1
+      return false
+    }
 
     if (numReadRows == rowsPerSecond) {
       // Sleep until we reach the next second.
@@ -143,6 +151,10 @@ class RateStreamDataReader(
   override def get: Row = currentRow
 
   override def close(): Unit = {}
+
+  override def outputMarker(): Unit = synchronized {
+    numQueuedMarkers += 1
+  }
 
   // We use the value corresponding to partition 0 as the offset.
   override def getOffset(): Offset = ContinuousRateStreamOffset(Map(partitionIndex -> currentValue))

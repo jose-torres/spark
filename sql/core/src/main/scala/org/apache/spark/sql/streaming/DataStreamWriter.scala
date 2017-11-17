@@ -17,7 +17,8 @@
 
 package org.apache.spark.sql.streaming
 
-import java.util.Locale
+import java.text.SimpleDateFormat
+import java.util.{Date, Locale, UUID}
 
 import scala.collection.JavaConverters._
 
@@ -26,7 +27,9 @@ import org.apache.spark.sql.{AnalysisException, Dataset, ForeachWriter}
 import org.apache.spark.sql.catalyst.streaming.InternalOutputModes
 import org.apache.spark.sql.execution.command.DDLUtils
 import org.apache.spark.sql.execution.datasources.DataSource
+import org.apache.spark.sql.execution.datasources.v2.WriteToDataSourceV2
 import org.apache.spark.sql.execution.streaming._
+import org.apache.spark.sql.sources.v2._
 
 /**
  * Interface used to write a streaming `Dataset` to external storage systems (e.g. file systems,
@@ -248,6 +251,7 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
         extraOptions.get("queryName"),
         chkpointLoc,
         df,
+        extraOptions.toMap,
         sink,
         outputMode,
         useTempCheckpointLocation = true,
@@ -262,6 +266,7 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
         extraOptions.get("queryName"),
         extraOptions.get("checkpointLocation"),
         df,
+        extraOptions.toMap,
         sink,
         outputMode,
         useTempCheckpointLocation = true,
@@ -273,17 +278,33 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
         } else {
           (false, true)
         }
-      val dataSource =
-        DataSource(
-          df.sparkSession,
-          className = source,
-          options = extraOptions.toMap,
-          partitionColumns = normalizedParCols.getOrElse(Nil))
+      val cls = DataSource.lookupDataSource(source)
+      // TODO: there should just be a new provider for v2 maybe? or maybe we should fall back to
+      // v1 rather than erroring
+      // we have to check ContinuousWriteSupport so the provider doesn't have to inherit
+      // DataSourceV2 and disrupt reads
+      val sink = if (extraOptions.get("continuous").contains("true") &&
+        classOf[ContinuousWriteSupport].isAssignableFrom(cls)) {
+        cls.newInstance() match {
+          case ds: BaseStreamingSink => ds
+          case _ => throw new AnalysisException(s"$cls does not support data writing.")
+        }
+      } else {
+        // Code path for data source v1.
+        val dataSource =
+          DataSource(
+            df.sparkSession,
+            className = source,
+            options = extraOptions.toMap,
+            partitionColumns = normalizedParCols.getOrElse(Nil))
+        dataSource.createSink(outputMode)
+      }
       df.sparkSession.sessionState.streamingQueryManager.startQuery(
         extraOptions.get("queryName"),
         extraOptions.get("checkpointLocation"),
         df,
-        dataSource.createSink(outputMode),
+        extraOptions.toMap,
+        sink,
         outputMode,
         useTempCheckpointLocation = useTempCheckpointLocation,
         recoverFromCheckpointLocation = recoverFromCheckpointLocation,

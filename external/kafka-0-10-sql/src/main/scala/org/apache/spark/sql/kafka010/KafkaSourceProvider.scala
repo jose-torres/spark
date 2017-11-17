@@ -27,9 +27,11 @@ import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer}
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SQLContext}
-import org.apache.spark.sql.execution.streaming.{Sink, Source}
+import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession, SQLContext}
+import org.apache.spark.sql.execution.streaming.{Offset, Sink, Source}
 import org.apache.spark.sql.sources._
+import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, ContinuousWriteSupport, DataSourceV2, DataSourceV2Options}
+import org.apache.spark.sql.sources.v2.writer.ContinuousWriter
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 
@@ -43,6 +45,8 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     with StreamSinkProvider
     with RelationProvider
     with CreatableRelationProvider
+    with ContinuousWriteSupport
+    with ContinuousReadSupport
     with Logging {
   import KafkaSourceProvider._
 
@@ -93,6 +97,48 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
 
     new KafkaSource(
       sqlContext,
+      kafkaOffsetReader,
+      kafkaParamsForExecutors(specifiedKafkaParams, uniqueGroupId),
+      parameters,
+      metadataPath,
+      startingStreamOffsets,
+      failOnDataLoss(caseInsensitiveParams))
+  }
+
+  // TODO remove
+  override def commit(end: Offset): Unit = {}
+  override def stop(): Unit = {}
+
+  override def createContinuousReader(
+      offset: java.util.Optional[Offset],
+      schema: java.util.Optional[StructType],
+      metadataPath: String,
+      options: DataSourceV2Options): KafkaReaderV2 = {
+    val parameters = options.asMap().asScala.toMap
+    validateStreamOptions(parameters)
+    // Each running query should use its own group id. Otherwise, the query may be only assigned
+    // partial data since Kafka will assign partitions to multiple consumers having the same group
+    // id. Hence, we should generate a unique id for each query.
+    val uniqueGroupId = s"spark-kafka-source-${UUID.randomUUID}-${metadataPath.hashCode}"
+
+    val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
+    val specifiedKafkaParams =
+      parameters
+        .keySet
+        .filter(_.toLowerCase(Locale.ROOT).startsWith("kafka."))
+        .map { k => k.drop(6).toString -> parameters(k) }
+        .toMap
+
+    val startingStreamOffsets = KafkaSourceProvider.getKafkaOffsetRangeLimit(caseInsensitiveParams,
+      STARTING_OFFSETS_OPTION_KEY, LatestOffsetRangeLimit)
+
+    val kafkaOffsetReader = new KafkaOffsetReader(
+      strategy(caseInsensitiveParams),
+      kafkaParamsForDriver(specifiedKafkaParams),
+      parameters,
+      driverGroupIdPrefix = s"$uniqueGroupId-driver")
+
+    new KafkaReaderV2(
       kafkaOffsetReader,
       kafkaParamsForExecutors(specifiedKafkaParams, uniqueGroupId),
       parameters,
@@ -179,6 +225,25 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
         throw new UnsupportedOperationException("BaseRelation from Kafka write " +
           "operation is not usable.")
     }
+  }
+
+  override def createContinuousWriter(
+      queryId: String,
+      batchId: Long,
+      schema: StructType,
+      mode: OutputMode,
+      options: DataSourceV2Options): java.util.Optional[ContinuousWriter] = {
+    import scala.collection.JavaConverters._
+
+    val spark = SparkSession.getActiveSession.get
+    val topic = Option(options.get(TOPIC_OPTION_KEY).orElse(null)).map(_.trim)
+    // We convert the options argument from V2 -> Java map -> scala mutable -> scala immutable.
+    val producerParams = kafkaParamsForProducer(options.asMap.asScala.toMap)
+
+    KafkaWriter.validateQuery(
+      schema.toAttributes, new java.util.HashMap[String, Object](producerParams.asJava), topic)
+
+    java.util.Optional.of(new KafkaWriterV2(topic, producerParams, schema))
   }
 
   private def strategy(caseInsensitiveParams: Map[String, String]) =
