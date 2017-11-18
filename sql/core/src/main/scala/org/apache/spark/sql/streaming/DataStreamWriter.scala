@@ -398,7 +398,18 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
 
   private var outputMode: OutputMode = OutputMode.Append
 
-  private var trigger: Trigger = Trigger.ProcessingTime(0L)
+  private var trigger: Trigger = {
+    val isContinuous = ds.logicalPlan.collectFirst {
+      case _: ContinuousRelation => true
+      case _: ContinuousExecutionRelation => true
+    }.isDefined
+
+    if (isContinuous) {
+      Trigger.ProcessingTime(999L)
+    } else {
+      Trigger.ProcessingTime(0L)
+    }
+  }
 
   private var extraOptions = new scala.collection.mutable.HashMap[String, String]
 

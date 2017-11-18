@@ -469,6 +469,7 @@ class KafkaSourceSuite extends KafkaSourceTest {
       .format("kafka")
       .option("kafka.bootstrap.servers", testUtils.brokerAddress)
       .option("subscribe", topic)
+      .option("continuous", "true")
 
     val kafka = reader.load()
       .selectExpr("CAST(value AS STRING)")

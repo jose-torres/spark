@@ -156,20 +156,19 @@ final class DataStreamReader private[sql](sparkSession: SparkSession) extends Lo
     }
 
     val cls = DataSource.lookupDataSource(source)
-    if (classOf[ContinuousReadSupport].isAssignableFrom(cls)) {
+    if (extraOptions.get("continuous").contains("true")) {
       val options = new DataSourceV2Options(extraOptions.asJava)
-      // TODO don't hardcode kafka schema
-      val schema = StructType(Seq(
-        StructField("key", BinaryType),
-        StructField("value", BinaryType),
-        StructField("topic", StringType),
-        StructField("partition", IntegerType),
-        StructField("offset", LongType),
-        StructField("timestamp", TimestampType),
-        StructField("timestampType", IntegerType)
-      )).toAttributes
       val continuousRelation = cls.newInstance() match {
-        case ds: ContinuousReadSupport => ContinuousRelation(ds, source, extraOptions.toMap, schema)
+        case ds: ContinuousReadSupport =>
+          // TODO: What do we pass as the metadata log path? We just need some scratch space, the
+          // schema can't depend on it
+          val tempReaderForSchema = ds.createContinuousReader(
+            java.util.Optional.empty(),
+            java.util.Optional.ofNullable(userSpecifiedSchema.orNull),
+            "scratch/path/for/schema",
+            options)
+          ContinuousRelation(ds, source, extraOptions.toMap,
+            tempReaderForSchema.readSchema().toAttributes)
         case _ =>
           throw new AnalysisException(s"$cls does not support data reading.")
       }

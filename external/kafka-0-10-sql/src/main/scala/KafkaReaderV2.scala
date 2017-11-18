@@ -56,10 +56,10 @@ class KafkaReaderV2(
     KafkaSourceOffset(mergedMap)
   }
 
-  private val session = SparkSession.getActiveSession.get
-  private val sc = session.sparkContext
+  private lazy val session = SparkSession.getActiveSession.get
+  private lazy val sc = session.sparkContext
 
-  private val pollTimeoutMs = sourceOptions.getOrElse(
+  private lazy val pollTimeoutMs = sourceOptions.getOrElse(
     "kafkaConsumer.pollTimeoutMs",
     sc.conf.getTimeAsMs("spark.network.timeout", "120s").toString
   ).toLong
@@ -115,7 +115,6 @@ class KafkaReaderV2(
       offsets
     }.partitionToOffsets
   }
-  print(s"INIT: $initialPartitionOffsets")
 
   private def fetchAndVerify(specificOffsets: Map[TopicPartition, Long]) = {
     val result = kafkaReader.fetchSpecificOffsets(specificOffsets)

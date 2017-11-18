@@ -156,11 +156,9 @@ class ContinuousExecution(
   }
 
   private val triggerExecutor = trigger match {
-    case _ => ProcessingTimeExecutor(ProcessingTime(999), triggerClock)
-    // TODO input
-    /* case t: ProcessingTime => ProcessingTimeExecutor(t, triggerClock)
+    case t: ProcessingTime => ProcessingTimeExecutor(t, triggerClock)
     case OneTimeTrigger => OneTimeExecutor()
-    case _ => throw new IllegalStateException(s"Unknown type of trigger: $trigger") */
+    case _ => throw new IllegalStateException(s"Unknown type of trigger: $trigger")
   }
 
   /** Defines the internal state of execution */
