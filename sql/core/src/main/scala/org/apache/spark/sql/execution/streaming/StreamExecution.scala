@@ -772,7 +772,7 @@ class StreamExecution(
           DataSourceV2Options.empty())
         WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
       case _: Sink => triggerLogicalPlan
-      case s => throw new IllegalArgumentException(s"unknown sink type ${s.getClass}")
+      case _ => throw new IllegalArgumentException("unknown sink type")
     }
 
     reportTimeTaken("queryPlanning") {

@@ -283,11 +283,11 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
       // v1 rather than erroring
       // we have to check ContinuousWriteSupport so the provider doesn't have to inherit
       // DataSourceV2 and disrupt reads
-      val sink = if (extraOptions.get("continuous").contains("true") &&
+      val sink = if (df.logicalPlan.collectFirst{ case _: ContinuousRelation => true }.isDefined &&
         classOf[ContinuousWriteSupport].isAssignableFrom(cls)) {
         cls.newInstance() match {
           case ds: BaseStreamingSink => ds
-          case _ => throw new AnalysisException(s"$cls does not support data writing.")
+          case _ => throw new AnalysisException(s"$cls does not support continuous writing.")
         }
       } else {
         // Code path for data source v1.
@@ -403,7 +403,6 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
       case _: ContinuousRelation => true
       case _: ContinuousExecutionRelation => true
     }.isDefined
-
     if (isContinuous) {
       Trigger.ProcessingTime(999L)
     } else {

@@ -330,6 +330,7 @@ class MemoryDataWriter(partition: Int, outputMode: OutputMode)
   override def commit(): MemoryWriterCommitMessage = {
     // Clear the buffer so we can use this writer for both microbatch and continuous streaming.
     val msg = MemoryWriterCommitMessage(partition, data.clone())
+    print(s"")
     data.clear()
     msg
   }

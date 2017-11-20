@@ -46,6 +46,42 @@ import org.apache.spark.sql.streaming.util.StreamManualClock
 import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
 
+class ContinuousSuite extends ContinuousStreamTest {
+  import testImplicits._
+
+  test("basic rate source") {
+    val df = spark.readStream.format("rate").option("continuous", "true").load().select('value)
+
+    // TODO: validate against low trigger interval
+    testStream(df)(
+      StartStream(),
+      Execute(_ => Thread.sleep(8500)),
+      CheckAnswer(scala.Range(0, 40): _*),
+      StopStream,
+      StartStream(),
+      Execute(_ => Thread.sleep(8500)),
+      CheckAnswer(scala.Range(0, 85): _*))
+  }
+
+  test("repeatedly restart") {
+    val df = spark.readStream.format("rate").option("continuous", "true").load().select('value)
+
+    // TODO: validate against low trigger interval
+    testStream(df)(
+      StartStream(),
+      Execute(_ => Thread.sleep(3000)),
+      CheckAnswer(scala.Range(0, 15): _*),
+      StopStream,
+      StartStream(),
+      StopStream,
+      StartStream(),
+      StopStream,
+      StartStream(),
+      Execute(_ => Thread.sleep(3000)),
+      CheckAnswer(scala.Range(0, 30): _*))
+  }
+}
+
 class StreamSuite extends StreamTest {
 
   import testImplicits._
@@ -76,69 +112,6 @@ class StreamSuite extends StreamTest {
       AddData(inputData, 4, 5, 6),
       StartStream(),
       CheckAnswer(2, 3, 4, 5, 6, 7))
-  }
-
-  test("continuous source") {
-    withTempDir { checkpointDir =>
-      val inputData = new ContinuousRateStreamSource
-      val mapped = Dataset.ofRows(
-        sqlContext.sparkSession,
-        new ContinuousExecutionRelation(inputData, Map(), StructType(
-          StructField("timestamp", TimestampType, false) ::
-            StructField("value", LongType, false) :: Nil).toAttributes)
-        (sqlContext.sparkSession)).select('value)
-      val query = mapped.writeStream
-        .format("memory")
-        .queryName("memory")
-        .option("checkpointLocation", checkpointDir.getAbsolutePath)
-        .start()
-        .asInstanceOf[ContinuousExecution]
-      query.awaitInitialization(streamingTimeout.toMillis)
-
-      val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
-        .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
-        .sink
-
-      // TODO: get a reliable test harness, rather than sleeping random amounts of time and hoping
-      // the stream runs for exactly the right amount.
-      Thread.sleep(8500)
-      try {
-        assert(sink.allData.sortBy(_.getLong(0)) == scala.Range(0, 40).sorted.map(Row(_)))
-      } finally {
-        query.stop()
-      }
-
-      query.stop()
-      // make sure jobs are stopped
-      eventually(timeout(streamingTimeout)) {
-        System.out.flush()
-        assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
-      }
-
-      val newQuery = mapped.writeStream
-        .format("memory")
-        .queryName("memory22")
-        .option("checkpointLocation", checkpointDir.getAbsolutePath)
-        .start()
-        .asInstanceOf[ContinuousExecution]
-
-      newQuery.awaitInitialization(streamingTimeout.toMillis)
-      Thread.sleep(8600)
-      val newSink =
-        newQuery.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
-        .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
-        .sink
-      try {
-        assert(newSink.allData.sortBy(_.getLong(0)) == scala.Range(40, 85).sorted.map(Row(_)))
-      } finally {
-        newQuery.stop()
-      }
-
-      // make sure jobs are stopped
-      eventually(timeout(streamingTimeout)) {
-        assert(sparkContext.statusTracker.getActiveJobIds().isEmpty)
-      }
-    }
   }
 
   test("join") {

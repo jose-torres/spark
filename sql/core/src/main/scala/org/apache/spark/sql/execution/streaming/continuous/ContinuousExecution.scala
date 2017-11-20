@@ -680,6 +680,33 @@ class ContinuousExecution(
     Option(name).map(_ + "<br/>").getOrElse("") +
       s"id = $id<br/>runId = $runId<br/>batch = $batchDescription"
   }
+
+  /**
+   * Blocks the current thread until processing for data from the given `source` has reached at
+   * least the given `Offset`. This method is intended for use primarily when writing tests.
+   */
+  private[sql] def awaitOffset(source: BaseStreamingSource, newOffset: Offset): Unit = {
+    assertAwaitThread()
+    // TODO implement
+    throw new IllegalStateException("TODO implement")
+    /* def notDone = {
+      val localCommittedOffsets = committedOffsets
+      !localCommittedOffsets.contains(source) || localCommittedOffsets(source) != newOffset
+    }
+
+    while (notDone) {
+      awaitBatchLock.lock()
+      try {
+        awaitBatchLockCondition.await(100, TimeUnit.MILLISECONDS)
+        if (streamDeathCause != null) {
+          throw streamDeathCause
+        }
+      } finally {
+        awaitBatchLock.unlock()
+      }
+    }
+    logDebug(s"Unblocked at $newOffset for $source") */
+  }
 }
 
 object ContinuousExecution {

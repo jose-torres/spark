@@ -340,6 +340,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         StreamingRelationExec(s.sourceName, s.output) :: Nil
       case s: StreamingExecutionRelation =>
         StreamingRelationExec(s.toString, s.output) :: Nil
+      case s: ContinuousRelation => StreamingRelationExec(s.toString, s.output) :: Nil
       case _ => Nil
     }
   }
