@@ -41,7 +41,7 @@ case class OneTimeExecutor() extends TriggerExecutor {
 }
 
 /**
- * A trigger executor that runs a batch every `intervalMs` milliseconds.
+ * A trigger executor that runs an action every `intervalMs` milliseconds.
  */
 case class ProcessingTimeExecutor(processingTime: ProcessingTime, clock: Clock = new SystemClock())
   extends TriggerExecutor with Logging {
@@ -71,15 +71,15 @@ case class ProcessingTimeExecutor(processingTime: ProcessingTime, clock: Clock =
     }
   }
 
-  /** Called when a batch falls behind */
+  /** Called when the trigger action falls behind */
   def notifyBatchFallingBehind(realElapsedTimeMs: Long): Unit = {
-    logWarning("Current batch is falling behind. The trigger interval is " +
+    logWarning("Current action is falling behind. The trigger interval is " +
       s"${intervalMs} milliseconds, but spent ${realElapsedTimeMs} milliseconds")
   }
 
   /**
-   * Returns the start time in milliseconds for the next batch interval, given the current time.
-   * Note that a batch interval is inclusive with respect to its start time, and thus calling
+   * Returns the start time in milliseconds for the next interval, given the current time.
+   * Note that an interval is inclusive with respect to its start time, and thus calling
    * `nextBatchTime` with the result of a previous call should return the next interval. (i.e. given
    * an interval of `100 ms`, `nextBatchTime(nextBatchTime(0)) = 200` rather than `0`).
    */

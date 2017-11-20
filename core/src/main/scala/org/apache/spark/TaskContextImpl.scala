@@ -147,6 +147,7 @@ private[spark] class TaskContextImpl(
   private[spark] override def killTaskIfInterrupted(): Unit = {
     val reason = reasonIfKilled
     if (reason.isDefined) {
+      print("YYYYYYYY KILLED")
       throw new TaskKilledException(reason.get)
     }
   }

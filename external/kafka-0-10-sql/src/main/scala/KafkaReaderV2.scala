@@ -1,0 +1,262 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.spark.sql.kafka010
+
+import java.io._
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+
+import org.apache.commons.io.IOUtils
+import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.clients.producer.{Callback, ProducerRecord, RecordMetadata}
+import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.errors.WakeupException
+
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.{DataFrame, Row, SparkSession, SQLContext}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.encoders.RowEncoder
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal, UnsafeProjection}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.execution.streaming.{HDFSMetadataLog, Offset, SerializedOffset}
+import org.apache.spark.sql.kafka010.KafkaSource.{getSortedExecutorList, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE, VERSION}
+import org.apache.spark.sql.kafka010.KafkaSourceProvider.{kafkaParamsForProducer, TOPIC_OPTION_KEY}
+import org.apache.spark.sql.sources.v2.{ContinuousWriteSupport, DataSourceV2, DataSourceV2Options}
+import org.apache.spark.sql.sources.v2.reader.{ContinuousDataReader, ContinuousReader, DataSourceV2Reader, ReadTask}
+import org.apache.spark.sql.sources.v2.writer._
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.types.{BinaryType, StringType, StructType}
+import org.apache.spark.unsafe.types.UTF8String
+
+class KafkaReaderV2(
+    kafkaReader: KafkaOffsetReader,
+    executorKafkaParams: java.util.Map[String, Object],
+    sourceOptions: Map[String, String],
+    metadataPath: String,
+    startingOffsets: KafkaOffsetRangeLimit,
+    failOnDataLoss: Boolean) extends DataSourceV2Reader with ContinuousReader with Logging {
+
+  override def mergeOffsets(offsets: Array[Offset]): Offset = {
+    val mergedMap = offsets.map(KafkaSourceOffset.getPartitionOffsets).reduce(_ ++ _)
+    KafkaSourceOffset(mergedMap)
+  }
+
+  private lazy val session = SparkSession.getActiveSession.get
+  private lazy val sc = session.sparkContext
+
+  private lazy val pollTimeoutMs = sourceOptions.getOrElse(
+    "kafkaConsumer.pollTimeoutMs",
+    sc.conf.getTimeAsMs("spark.network.timeout", "120s").toString
+  ).toLong
+
+  private val maxOffsetsPerTrigger =
+    sourceOptions.get("maxOffsetsPerTrigger").map(_.toLong)
+
+  /**
+   * Lazily initialize `initialPartitionOffsets` to make sure that `KafkaConsumer.poll` is only
+   * called in StreamExecutionThread. Otherwise, interrupting a thread while running
+   * `KafkaConsumer.poll` may hang forever (KAFKA-1894).
+   */
+  private lazy val initialPartitionOffsets = {
+    val metadataLog =
+      new HDFSMetadataLog[KafkaSourceOffset](session, metadataPath) {
+        override def serialize(metadata: KafkaSourceOffset, out: OutputStream): Unit = {
+          out.write(0) // A zero byte is written to support Spark 2.1.0 (SPARK-19517)
+          val writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8))
+          writer.write("v" + VERSION + "\n")
+          writer.write(metadata.json)
+          writer.flush
+        }
+
+        override def deserialize(in: InputStream): KafkaSourceOffset = {
+          in.read() // A zero byte is read to support Spark 2.1.0 (SPARK-19517)
+          val content = IOUtils.toString(new InputStreamReader(in, StandardCharsets.UTF_8))
+          // HDFSMetadataLog guarantees that it never creates a partial file.
+          assert(content.length != 0)
+          if (content(0) == 'v') {
+            val indexOfNewLine = content.indexOf("\n")
+            if (indexOfNewLine > 0) {
+              val version = parseVersion(content.substring(0, indexOfNewLine), VERSION)
+              KafkaSourceOffset(SerializedOffset(content.substring(indexOfNewLine + 1)))
+            } else {
+              throw new IllegalStateException(
+                s"Log file was malformed: failed to detect the log file version line.")
+            }
+          } else {
+            // The log was generated by Spark 2.1.0
+            KafkaSourceOffset(SerializedOffset(content))
+          }
+        }
+      }
+
+    metadataLog.get(0).getOrElse {
+      val offsets = startingOffsets match {
+        case EarliestOffsetRangeLimit => KafkaSourceOffset(kafkaReader.fetchEarliestOffsets())
+        case LatestOffsetRangeLimit => KafkaSourceOffset(kafkaReader.fetchLatestOffsets())
+        case SpecificOffsetRangeLimit(p) => fetchAndVerify(p)
+      }
+      metadataLog.add(0, offsets)
+      logInfo(s"Initial offsets: $offsets")
+      offsets
+    }.partitionToOffsets
+  }
+
+  private def fetchAndVerify(specificOffsets: Map[TopicPartition, Long]) = {
+    val result = kafkaReader.fetchSpecificOffsets(specificOffsets)
+    specificOffsets.foreach {
+      case (tp, off) if off != KafkaOffsetRangeLimit.LATEST &&
+        off != KafkaOffsetRangeLimit.EARLIEST =>
+        if (result(tp) != off) {
+          reportDataLoss(
+            s"startingOffsets for $tp was $off but consumer reset to ${result(tp)}")
+        }
+      case _ =>
+      // no real way to check that beginning or end is reasonable
+    }
+    KafkaSourceOffset(result)
+  }
+
+  override def readSchema: StructType = KafkaOffsetReader.kafkaSchema
+
+  override def createReadTasks(): java.util.List[ReadTask[Row]] = {
+    import scala.collection.JavaConverters._
+    // TODO handle new and deleted partitions
+
+    val fromPartitionOffsets = initialPartitionOffsets
+
+    print(s"INIT2: ${fromPartitionOffsets.toSeq}")
+    fromPartitionOffsets.toSeq.map {
+      case (topicPartition, start) =>
+        KafkaV2ReadTask(topicPartition, start, executorKafkaParams, pollTimeoutMs, failOnDataLoss)
+          .asInstanceOf[ReadTask[Row]]
+    }.asJava
+  }
+
+  /** Stop this source and free any resources it has allocated. */
+  // TODO stop in base class
+  def stop(): Unit = synchronized {
+    kafkaReader.close()
+  }
+
+  override def toString(): String = s"KafkaSource[$kafkaReader]"
+
+  /**
+   * If `failOnDataLoss` is true, this method will throw an `IllegalStateException`.
+   * Otherwise, just log a warning.
+   */
+  private def reportDataLoss(message: String): Unit = {
+    if (failOnDataLoss) {
+      throw new IllegalStateException(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE")
+    } else {
+      logWarning(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE")
+    }
+  }
+}
+
+case class KafkaV2ReadTask(
+    topicPartition: TopicPartition,
+    start: Long,
+    kafkaParams: java.util.Map[String, Object],
+    pollTimeoutMs: Long,
+    failOnDataLoss: Boolean)
+  extends ReadTask[Row] {
+  override def createDataReader(): KafkaV2DataReader = {
+    new KafkaV2DataReader(topicPartition, start, kafkaParams, pollTimeoutMs, failOnDataLoss)
+  }
+}
+
+class KafkaV2DataReader(
+    topicPartition: TopicPartition,
+    start: Long,
+    kafkaParams: java.util.Map[String, Object],
+    pollTimeoutMs: Long,
+    failOnDataLoss: Boolean)
+  extends ContinuousDataReader[Row] {
+  private val topic = topicPartition.topic
+  private val kafkaPartition = topicPartition.partition
+  private val consumer = CachedKafkaConsumer.createUncached(topic, kafkaPartition, kafkaParams)
+
+  private var nextKafkaOffset = start match {
+    case s if s >= 0 => s
+    case KafkaOffsetRangeLimit.EARLIEST => consumer.getAvailableOffsetRange().earliest
+    case _ => throw new IllegalArgumentException(s"Invalid start Kafka offset $start.")
+  }
+  private var currentRecord: ConsumerRecord[Array[Byte], Array[Byte]] = _
+
+  // The number of markers (implemented has hasNext = false) queued up to output. Incremented by
+  // outputMarker(), and decremented by next() down to 0. Mutations are synchronized(this).
+  private var numQueuedMarkers = 0
+
+  // TODO how to deal with data loss? Are we dealing with it already implicitly?
+
+  override def next(): Boolean = {
+    if (numQueuedMarkers > 0) synchronized {
+      numQueuedMarkers -= 1
+      return false
+    }
+    try {
+      val r = consumer.get(nextKafkaOffset, Long.MaxValue, pollTimeoutMs, failOnDataLoss)
+      nextKafkaOffset = r.offset + 1
+      currentRecord = r
+      true
+    } catch {
+      case w: WakeupException =>
+        // There's a subtle sequencing edge case here. Starting from numQueuedMarkers 0, we can get:
+        //  * outputMarker increments (numQueuedMarkers = 1)
+        //  * next() is called and outputs a marker (numQueuedMarkers = 0)
+        //  * next() is called again, and gets stuck on a consumer.get()
+        //  * outputMarker finally comes back and calls wakeup()
+        // So we can indeed get here with numQueuedMarkers == 0. We then try again from the top.
+        if (numQueuedMarkers > 0) synchronized {
+          numQueuedMarkers -= 1
+          false
+        } else {
+          next()
+      }
+    }
+  }
+
+  override def get(): Row = {
+    val encoder = RowEncoder.apply(KafkaOffsetReader.kafkaSchema).resolveAndBind()
+    val baseRow = InternalRow(
+      currentRecord.key,
+      currentRecord.value,
+      UTF8String.fromString(currentRecord.topic),
+      currentRecord.partition,
+      currentRecord.offset,
+      DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(currentRecord.timestamp)),
+      currentRecord.timestampType.id)
+    print(s"ROW: $kafkaPartition ${new String(currentRecord.value())}\n")
+    encoder.fromRow(baseRow)
+  }
+
+  override def getOffset(): KafkaSourceOffset = {
+    KafkaSourceOffset(Map(topicPartition -> nextKafkaOffset))
+  }
+
+  override def outputMarker(): Unit = {
+    synchronized {
+      numQueuedMarkers += 1
+    }
+    consumer.wakeup()
+  }
+
+  override def close(): Unit = {
+    consumer.close()
+  }
+}

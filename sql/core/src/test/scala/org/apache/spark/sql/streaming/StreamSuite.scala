@@ -34,14 +34,53 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.plans.logical.Range
 import org.apache.spark.sql.catalyst.streaming.InternalOutputModes
 import org.apache.spark.sql.execution.command.ExplainCommand
+import org.apache.spark.sql.execution.datasources.v2.WriteToDataSourceV2Exec
 import org.apache.spark.sql.execution.streaming._
+import org.apache.spark.sql.execution.streaming.MemoryStreamV2
+import org.apache.spark.sql.execution.streaming.continuous.ContinuousRateStreamSource
 import org.apache.spark.sql.execution.streaming.state.{StateStore, StateStoreConf, StateStoreId, StateStoreProvider}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.StreamSourceProvider
 import org.apache.spark.sql.streaming.util.StreamManualClock
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
+
+class ContinuousSuite extends ContinuousStreamTest {
+  import testImplicits._
+
+  test("basic rate source") {
+    val df = spark.readStream.format("rate").option("continuous", "true").load().select('value)
+
+    // TODO: validate against low trigger interval
+    testStream(df)(
+      StartStream(),
+      Execute(_ => Thread.sleep(8500)),
+      CheckAnswer(scala.Range(0, 40): _*),
+      StopStream,
+      StartStream(),
+      Execute(_ => Thread.sleep(8500)),
+      CheckAnswer(scala.Range(0, 85): _*))
+  }
+
+  test("repeatedly restart") {
+    val df = spark.readStream.format("rate").option("continuous", "true").load().select('value)
+
+    // TODO: validate against low trigger interval
+    testStream(df)(
+      StartStream(),
+      Execute(_ => Thread.sleep(3000)),
+      CheckAnswer(scala.Range(0, 15): _*),
+      StopStream,
+      StartStream(),
+      StopStream,
+      StartStream(),
+      StopStream,
+      StartStream(),
+      Execute(_ => Thread.sleep(3000)),
+      CheckAnswer(scala.Range(0, 30): _*))
+  }
+}
 
 class StreamSuite extends StreamTest {
 
@@ -49,6 +88,20 @@ class StreamSuite extends StreamTest {
 
   test("map with recovery") {
     val inputData = MemoryStream[Int]
+    val mapped = inputData.toDS().map(_ + 1)
+
+    testStream(mapped)(
+      AddData(inputData, 1, 2, 3),
+      StartStream(),
+      CheckAnswer(2, 3, 4),
+      StopStream,
+      AddData(inputData, 4, 5, 6),
+      StartStream(),
+      CheckAnswer(2, 3, 4, 5, 6, 7))
+  }
+
+  test("v2source") {
+    val inputData = new MemoryStreamV2[Int]
     val mapped = inputData.toDS().map(_ + 1)
 
     testStream(mapped)(
@@ -291,7 +344,7 @@ class StreamSuite extends StreamTest {
     // For each batch, we would log the sink change after the execution
     // This checks whether the key of the sink change log is the expected batch id
     def CheckSinkLatestBatchId(expectedId: Int): AssertOnQuery =
-      AssertOnQuery(_.sink.asInstanceOf[MemorySink].latestBatchId.get == expectedId,
+      AssertOnQuery(_.sink.asInstanceOf[MemorySinkV2].latestBatchId.get == expectedId,
         s"sink's lastBatchId should be $expectedId")
 
     val inputData = MemoryStream[Int]
@@ -713,8 +766,12 @@ class StreamSuite extends StreamTest {
         query.awaitTermination()
       }
 
-      assert(e.getMessage.contains(providerClassName))
-      assert(e.getMessage.contains("instantiated"))
+      // In data source V1, the exception we receive will directly contain the failure. In V2,
+      // it'll be wrapped in a query terminated exception wrapped in a writer aborted exception.
+      assert(e.getMessage.contains(providerClassName) ||
+        e.getCause.getCause.getMessage.contains(providerClassName))
+      assert(e.getMessage.contains("instantiated") ||
+        e.getCause.getCause.getMessage.contains("instantiated"))
     }
   }
 

@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.plans.logical.LeafNode
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.datasources.DataSource
+import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, ReadMicroBatchSupport}
 
 object StreamingRelation {
   def apply(dataSource: DataSource): StreamingRelation = {
@@ -54,12 +55,66 @@ case class StreamingRelation(dataSource: DataSource, sourceName: String, output:
   )
 }
 
+case class ContinuousRelation(
+    dataSource: ContinuousReadSupport,
+    sourceName: String,
+    extraOptions: Map[String, String],
+    output: Seq[Attribute])
+  extends LeafNode {
+  override def isStreaming: Boolean = true
+  override def toString: String = sourceName
+
+  // TODO: can we get the conf here somehow?
+  override def computeStats(): Statistics = Statistics(
+    sizeInBytes = 0
+  )
+}
+
 /**
  * Used to link a streaming [[Source]] of data into a
  * [[org.apache.spark.sql.catalyst.plans.logical.LogicalPlan]].
  */
 case class StreamingExecutionRelation(
     source: Source,
+    output: Seq[Attribute])(session: SparkSession)
+  extends LeafNode {
+
+  override def isStreaming: Boolean = true
+  override def toString: String = source.toString
+
+  // There's no sensible value here. On the execution path, this relation will be
+  // swapped out with microbatches. But some dataframe operations (in particular explain) do lead
+  // to this node surviving analysis. So we satisfy the LeafNode contract with the session default
+  // value.
+  override def computeStats(): Statistics = Statistics(
+    sizeInBytes = BigInt(session.sessionState.conf.defaultSizeInBytes)
+  )
+}
+
+/**
+ * Used to link a streaming [[org.apache.spark.sql.sources.v2.DataSourceV2]] of data into a
+ * [[org.apache.spark.sql.catalyst.plans.logical.LogicalPlan]].
+ */
+case class StreamingExecutionRelationV2(
+    source: ReadMicroBatchSupport,
+    output: Seq[Attribute])(session: SparkSession)
+  extends LeafNode {
+
+  override def isStreaming: Boolean = true
+  override def toString: String = source.toString
+
+  // There's no sensible value here. On the execution path, this relation will be
+  // swapped out with microbatches. But some dataframe operations (in particular explain) do lead
+  // to this node surviving analysis. So we satisfy the LeafNode contract with the session default
+  // value.
+  override def computeStats(): Statistics = Statistics(
+    sizeInBytes = BigInt(session.sessionState.conf.defaultSizeInBytes)
+  )
+}
+
+case class ContinuousExecutionRelation(
+    source: ContinuousReadSupport,
+    extraOptions: Map[String, String],
     output: Seq[Attribute])(session: SparkSession)
   extends LeafNode {
 

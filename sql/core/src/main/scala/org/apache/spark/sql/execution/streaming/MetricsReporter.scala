@@ -32,7 +32,7 @@ import org.apache.spark.util.Clock
  * Codahale/DropWizard metrics
  */
 class MetricsReporter(
-    stream: StreamExecution,
+    stream: ProgressReporter,
     override val sourceName: String) extends CodahaleSource with Logging {
 
   override val metricRegistry: MetricRegistry = new MetricRegistry

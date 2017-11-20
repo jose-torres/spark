@@ -38,8 +38,12 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeMap, Curre
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.execution.command.StreamingExplainCommand
+import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, WriteToDataSourceV2}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.sources.v2._
+import org.apache.spark.sql.sources.v2.reader.DataSourceV2Reader
 import org.apache.spark.sql.streaming._
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.{Clock, UninterruptibleThread, Utils}
 
 /** States for [[StreamExecution]]'s lifecycle. */
@@ -62,7 +66,7 @@ class StreamExecution(
     override val name: String,
     private val checkpointRoot: String,
     analyzedPlan: LogicalPlan,
-    val sink: Sink,
+    val sink: BaseStreamingSink,
     val trigger: Trigger,
     val triggerClock: Clock,
     val outputMode: OutputMode,
@@ -154,12 +158,12 @@ class StreamExecution(
   /**
    * All stream sources present in the query plan. This will be set when generating logical plan.
    */
-  @volatile protected var sources: Seq[Source] = Seq.empty
+  @volatile protected var sources: Seq[BaseStreamingSource] = Seq.empty
 
   /**
    * A list of unique sources in the query plan. This will be set when generating logical plan.
    */
-  @volatile private var uniqueSources: Seq[Source] = Seq.empty
+  @volatile private var uniqueSources: Seq[BaseStreamingSource] = Seq.empty
 
   override lazy val logicalPlan: LogicalPlan = {
     assert(microBatchThread eq Thread.currentThread,
@@ -179,7 +183,10 @@ class StreamExecution(
           StreamingExecutionRelation(source, output)(sparkSession)
         })
     }
-    sources = _logicalPlan.collect { case s: StreamingExecutionRelation => s.source }
+    sources = _logicalPlan.collect {
+      case s: StreamingExecutionRelation => s.source
+      case s: StreamingExecutionRelationV2 => s.source
+    }
     uniqueSources = sources.distinct
     _logicalPlan
   }
@@ -197,7 +204,7 @@ class StreamExecution(
   var lastExecution: IncrementalExecution = _
 
   /** Holds the most recent input data for each source. */
-  protected var newData: Map[Source, DataFrame] = _
+  protected var newData: Map[BaseStreamingSource, DataFrame] = _
 
   @volatile
   private var streamDeathCause: StreamingQueryException = null
@@ -503,12 +510,14 @@ class StreamExecution(
                * Make a call to getBatch using the offsets from previous batch.
                * because certain sources (e.g., KafkaSource) assume on restart the last
                * batch will be executed before getOffset is called again. */
-              availableOffsets.foreach { ao: (Source, Offset) =>
-                val (source, end) = ao
-                if (committedOffsets.get(source).map(_ != end).getOrElse(true)) {
-                  val start = committedOffsets.get(source)
-                  source.getBatch(start, end)
-                }
+              availableOffsets.foreach {
+                case (source, end) =>
+                  if (source.isInstanceOf[Source] &&
+                    committedOffsets.get(source).map(_ != end).getOrElse(true)) {
+                    val start = committedOffsets.get(source)
+                    source.asInstanceOf[Source].getBatch(start, end)
+                  }
+                case _ =>
               }
               currentBatchId = latestCommittedBatchId + 1
               committedOffsets ++= availableOffsets
@@ -552,11 +561,20 @@ class StreamExecution(
     val hasNewData = {
       awaitBatchLock.lock()
       try {
-        val latestOffsets: Map[Source, Option[Offset]] = uniqueSources.map { s =>
-          updateStatusMessage(s"Getting offsets from $s")
-          reportTimeTaken("getOffset") {
-            (s, s.getOffset)
-          }
+        val latestOffsets: Map[BaseStreamingSource, Option[Offset]] = uniqueSources.map {
+          case s: Source =>
+            updateStatusMessage(s"Getting offsets from $s")
+            reportTimeTaken("getOffset") {
+              (s, s.getOffset)
+            }
+          case s: ReadMicroBatchSupport =>
+            updateStatusMessage(s"Getting offsets from $s")
+            reportTimeTaken("getOffset") {
+              // convert from Java optional
+              (s, Option(s.getOffset.orElse(null)))
+            }
+          case s: ContinuousReadSupport => (s, Some(LongOffset(-1)))
+          case _ => throw new IllegalStateException("unknown source type")
         }.toMap
         availableOffsets ++= latestOffsets.filter { case (s, o) => o.nonEmpty }.mapValues(_.get)
 
@@ -661,10 +679,11 @@ class StreamExecution(
    * @param sparkSessionToRunBatch Isolated [[SparkSession]] to run this batch with.
    */
   private def runBatch(sparkSessionToRunBatch: SparkSession): Unit = {
+    import scala.collection.JavaConverters._
     // Request unprocessed data from all sources.
     newData = reportTimeTaken("getBatch") {
       availableOffsets.flatMap {
-        case (source, available)
+        case (source: Source, available)
           if committedOffsets.get(source).map(_ != available).getOrElse(true) =>
           val current = committedOffsets.get(source)
           val batch = source.getBatch(current, available)
@@ -673,6 +692,21 @@ class StreamExecution(
               s"${batch.queryExecution.logical}")
           logDebug(s"Retrieving data from $source: $current -> $available")
           Some(source -> batch)
+        case _ => None
+      }
+    }
+
+    val newReaders: Map[BaseStreamingSource, DataSourceV2Reader] = reportTimeTaken("getBatch") {
+      availableOffsets.flatMap {
+        case (source: ReadMicroBatchSupport, available)
+          if committedOffsets.get(source).map(_ != available).getOrElse(true) =>
+          val current = committedOffsets.get(source)
+          val reader = source.createReader(
+            java.util.Optional.ofNullable(current.orNull),
+            available,
+            DataSourceV2Options.empty())
+          logDebug(s"Retrieving data from $source: $current -> $available")
+          Some(source -> reader)
         case _ => None
       }
     }
@@ -692,6 +726,17 @@ class StreamExecution(
         }.getOrElse {
           LocalRelation(output, isStreaming = true)
         }
+      case StreamingExecutionRelationV2(source, output) =>
+        newReaders.get(source).map { reader =>
+          val newOutput = reader.readSchema().toAttributes
+          assert(output.size == newOutput.size,
+            s"Invalid batch: ${Utils.truncatedString(output, ",")} != " +
+              s"${Utils.truncatedString(newOutput, ",")}")
+          replacements ++= output.zip(newOutput)
+          DataSourceV2Relation(newOutput, reader)
+        }.getOrElse {
+          LocalRelation(output, isStreaming = true)
+        }
     }
 
     // Rewire the plan to use the new attributes that were returned by the source.
@@ -707,10 +752,33 @@ class StreamExecution(
           cd.dataType, cd.timeZoneId)
     }
 
+    // In data source V2, also append the sink. (In V1 the sink doesn't participate in the plan.)
+    val withPossibleV2Sink = sink match {
+      case s: ContinuousWriteSupport
+        if sources.exists(_.isInstanceOf[ContinuousReadSupport]) =>
+        val writer = s.createContinuousWriter(
+          s"$id",
+          currentBatchId,
+          triggerLogicalPlan.schema,
+          outputMode,
+          DataSourceV2Options.empty())
+        WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
+      case s: WriteMicroBatchSupport =>
+        val writer = s.createWriter(
+          s"$runId",
+          currentBatchId,
+          triggerLogicalPlan.schema,
+          outputMode,
+          DataSourceV2Options.empty())
+        WriteToDataSourceV2(writer.get(), triggerLogicalPlan)
+      case _: Sink => triggerLogicalPlan
+      case _ => throw new IllegalArgumentException("unknown sink type")
+    }
+
     reportTimeTaken("queryPlanning") {
       lastExecution = new IncrementalExecution(
         sparkSessionToRunBatch,
-        triggerLogicalPlan,
+        withPossibleV2Sink,
         outputMode,
         checkpointFile("state"),
         runId,
@@ -724,7 +792,13 @@ class StreamExecution(
 
     reportTimeTaken("addBatch") {
       SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution) {
-        sink.addBatch(currentBatchId, nextBatch)
+        sink match {
+          case s: Sink => s.addBatch(currentBatchId, nextBatch)
+          case s: WriteMicroBatchSupport =>
+            // Execute the V2 writer node in the query plan.
+            val qe = nextBatch.queryExecution
+            SQLExecution.withNewExecutionId(sparkSession, qe)(qe.toRdd)
+        }
       }
     }
 
@@ -775,7 +849,7 @@ class StreamExecution(
    * Blocks the current thread until processing for data from the given `source` has reached at
    * least the given `Offset`. This method is intended for use primarily when writing tests.
    */
-  private[sql] def awaitOffset(source: Source, newOffset: Offset): Unit = {
+  private[sql] def awaitOffset(source: BaseStreamingSource, newOffset: Offset): Unit = {
     assertAwaitThread()
     def notDone = {
       val localCommittedOffsets = committedOffsets

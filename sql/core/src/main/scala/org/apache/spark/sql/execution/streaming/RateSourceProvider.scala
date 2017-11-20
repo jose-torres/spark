@@ -28,7 +28,9 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.{AnalysisException, DataFrame, SQLContext}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.{CaseInsensitiveMap, DateTimeUtils}
+import org.apache.spark.sql.execution.streaming.continuous.ContinuousRateStreamReader
 import org.apache.spark.sql.sources.{DataSourceRegister, StreamSourceProvider}
+import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceV2, DataSourceV2Options}
 import org.apache.spark.sql.types._
 import org.apache.spark.util.{ManualClock, SystemClock}
 
@@ -46,7 +48,19 @@ import org.apache.spark.util.{ManualClock, SystemClock}
  *    generated rows. The source will try its best to reach `rowsPerSecond`, but the query may
  *    be resource constrained, and `numPartitions` can be tweaked to help reach the desired speed.
  */
-class RateSourceProvider extends StreamSourceProvider with DataSourceRegister {
+class RateSourceProvider extends StreamSourceProvider with DataSourceRegister
+  with DataSourceV2 with ContinuousReadSupport {
+  // TODO move
+  override def commit(end: Offset): Unit = {}
+  override def stop(): Unit = {}
+
+  override def createContinuousReader(
+      offset: java.util.Optional[Offset],
+      schema: java.util.Optional[StructType],
+      metadataPath: String,
+      options: DataSourceV2Options): ContinuousRateStreamReader = {
+    new ContinuousRateStreamReader(Option(offset.orElse(null)), options)
+  }
 
   override def sourceSchema(
       sqlContext: SQLContext,

@@ -34,7 +34,8 @@ import org.scalatest.concurrent.PatienceConfiguration.Timeout
 import org.scalatest.time.SpanSugar._
 
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.ForeachWriter
+import org.apache.spark.sql.{ForeachWriter, Row}
+import org.apache.spark.sql.execution.datasources.v2.WriteToDataSourceV2Exec
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.functions.{count, window}
 import org.apache.spark.sql.kafka010.KafkaSourceProvider._
@@ -457,7 +458,7 @@ class KafkaSourceSuite extends KafkaSourceTest {
     )
   }
 
-  test("starting offset is latest by default") {
+  test("continuous") {
     val topic = newTopic()
     testUtils.createTopic(topic, partitions = 5)
     testUtils.sendMessages(topic, Array("0"))
@@ -468,17 +469,32 @@ class KafkaSourceSuite extends KafkaSourceTest {
       .format("kafka")
       .option("kafka.bootstrap.servers", testUtils.brokerAddress)
       .option("subscribe", topic)
+      .option("continuous", "true")
 
     val kafka = reader.load()
       .selectExpr("CAST(value AS STRING)")
       .as[String]
     val mapped = kafka.map(_.toInt)
+    val query = mapped.writeStream
+      .format("memory")
+      .queryName("memory")
+      .start()
+      .asInstanceOf[ContinuousExecution]
+    query.awaitInitialization(streamingTimeout.toMillis)
 
-    testStream(mapped)(
-      makeSureGetOffsetCalled,
-      AddKafkaData(Set(topic), 1, 2, 3),
-      CheckAnswer(1, 2, 3)  // should not have 0
-    )
+    Thread.sleep(1000)
+
+    val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
+      .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
+      .sink
+
+    print(testUtils.sendMessages(topic, Seq(1, 2, 3).map{ _.toString }.toArray))
+    Thread.sleep(8500)
+    try {
+      assert(sink.allData.sortBy(_.getInt(0)) == Seq(1, 2, 3).sorted.map(Row(_)))
+    } finally {
+      query.stop()
+    }
   }
 
   test("bad source options") {

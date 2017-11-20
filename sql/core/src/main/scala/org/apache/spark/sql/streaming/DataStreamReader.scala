@@ -26,8 +26,10 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.execution.command.DDLUtils
 import org.apache.spark.sql.execution.datasources.DataSource
-import org.apache.spark.sql.execution.streaming.StreamingRelation
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
+import org.apache.spark.sql.execution.streaming.{ContinuousRelation, Offset, StreamingRelation}
+import org.apache.spark.sql.sources.v2._
+import org.apache.spark.sql.types._
 
 /**
  * Interface used to load a streaming `Dataset` from external storage systems (e.g. file systems,
@@ -153,13 +155,34 @@ final class DataStreamReader private[sql](sparkSession: SparkSession) extends Lo
         "read files of Hive data source directly.")
     }
 
-    val dataSource =
-      DataSource(
+    val cls = DataSource.lookupDataSource(source)
+    if (extraOptions.get("continuous").contains("true")) {
+      val options = new DataSourceV2Options(extraOptions.asJava)
+      val continuousRelation = cls.newInstance() match {
+        case ds: ContinuousReadSupport =>
+          // TODO: What do we pass as the metadata log path? We just need some scratch space, the
+          // schema can't depend on it
+          val tempReaderForSchema = ds.createContinuousReader(
+            java.util.Optional.empty(),
+            java.util.Optional.ofNullable(userSpecifiedSchema.orNull),
+            "scratch/path/for/schema",
+            options)
+          ContinuousRelation(ds, source, extraOptions.toMap,
+            tempReaderForSchema.readSchema().toAttributes)
+        case _ =>
+          throw new AnalysisException(s"$cls does not support data reading.")
+      }
+
+      Dataset.ofRows(sparkSession, continuousRelation)
+    } else {
+      // Code path for data source v1.
+      val dataSource = DataSource(
         sparkSession,
         userSpecifiedSchema = userSpecifiedSchema,
         className = source,
         options = extraOptions.toMap)
-    Dataset.ofRows(sparkSession, StreamingRelation(dataSource))
+      Dataset.ofRows(sparkSession, StreamingRelation(dataSource))
+    }
   }
 
   /**
