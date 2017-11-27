@@ -110,7 +110,6 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
   override def stop(): Unit = {}
 
   override def createContinuousReader(
-      offset: java.util.Optional[Offset],
       schema: java.util.Optional[StructType],
       metadataPath: String,
       options: DataSourceV2Options): KafkaReaderV2 = {

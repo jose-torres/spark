@@ -39,22 +39,7 @@ case class ContinuousRateStreamOffset(partitionToStartValue: Map[Int, Long]) ext
   override val json = Serialization.write(partitionToStartValue)
 }
 
-class ContinuousRateStreamSource extends DataSourceV2 with ContinuousReadSupport {
-  override def createContinuousReader(
-      offset: java.util.Optional[Offset],
-      schema: java.util.Optional[StructType],
-      metadataPath: String,
-      options: DataSourceV2Options): ContinuousRateStreamReader = {
-    new ContinuousRateStreamReader(Option(offset.orElse(null)), options)
-  }
-
-  def commit(end: Offset): Unit = {}
-
-  /** Stop this source and free any resources it has allocated. */
-  def stop(): Unit = {}
-}
-
-class ContinuousRateStreamReader(offset: Option[Offset], options: DataSourceV2Options)
+class ContinuousRateStreamReader(options: DataSourceV2Options)
   extends DataSourceV2Reader with ContinuousReader {
   implicit val defaultFormats: DefaultFormats = DefaultFormats
 
@@ -80,8 +65,9 @@ class ContinuousRateStreamReader(offset: Option[Offset], options: DataSourceV2Op
         StructField("value", LongType, false) :: Nil)
   }
 
-  override def createReadTasks(): java.util.List[ReadTask[Row]] = {
-    val partitionStartMap = offset.map {
+  override def createReadTasks(
+      offset: java.util.Optional[Offset]): java.util.List[ReadTask[Row]] = {
+    val partitionStartMap = Option(offset.orElse(null)).map {
       case o: ContinuousRateStreamOffset => o.partitionToStartValue
       case s: SerializedOffset => Serialization.read[Map[Int, Long]](s.json)
       case _ => throw new IllegalArgumentException("invalid offset type for ContinuousRateSource")
@@ -89,7 +75,6 @@ class ContinuousRateStreamReader(offset: Option[Offset], options: DataSourceV2Op
     if (partitionStartMap.exists(_.keySet.size > numPartitions)) {
       throw new IllegalArgumentException("Start offset contained too many partitions.")
     }
-    val start = 0L
     val perPartitionRate = rowsPerSecond.toDouble / numPartitions.toDouble
 
     Range(0, numPartitions).map { n =>
@@ -100,6 +85,11 @@ class ContinuousRateStreamReader(offset: Option[Offset], options: DataSourceV2Op
       RateStreamReadTask(start, n, numPartitions, perPartitionRate).asInstanceOf[ReadTask[Row]]
     }.asJava
   }
+
+  // TODO move
+  override def commit(end: Offset): Unit = {}
+  override def stop(): Unit = {}
+
 }
 
 case class RateStreamReadTask(

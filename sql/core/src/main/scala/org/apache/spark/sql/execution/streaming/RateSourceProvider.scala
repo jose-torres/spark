@@ -50,16 +50,12 @@ import org.apache.spark.util.{ManualClock, SystemClock}
  */
 class RateSourceProvider extends StreamSourceProvider with DataSourceRegister
   with DataSourceV2 with ContinuousReadSupport {
-  // TODO move
-  override def commit(end: Offset): Unit = {}
-  override def stop(): Unit = {}
 
   override def createContinuousReader(
-      offset: java.util.Optional[Offset],
       schema: java.util.Optional[StructType],
       metadataPath: String,
       options: DataSourceV2Options): ContinuousRateStreamReader = {
-    new ContinuousRateStreamReader(Option(offset.orElse(null)), options)
+    new ContinuousRateStreamReader(options)
   }
 
   override def sourceSchema(

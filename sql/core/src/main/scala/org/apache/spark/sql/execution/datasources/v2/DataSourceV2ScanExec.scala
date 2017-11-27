@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.execution.streaming.Offset
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.types.StructType
 
@@ -34,7 +35,8 @@ import org.apache.spark.sql.types.StructType
  */
 case class DataSourceV2ScanExec(
     fullOutput: Seq[AttributeReference],
-    @transient reader: DataSourceV2Reader) extends LeafExecNode with DataSourceReaderHolder {
+    @transient reader: DataSourceV2Reader,
+    continuousStartOffset: Option[Offset] = None) extends LeafExecNode with DataSourceReaderHolder {
 
   override def canEqual(other: Any): Boolean = other.isInstanceOf[DataSourceV2ScanExec]
 
@@ -46,6 +48,10 @@ case class DataSourceV2ScanExec(
   override protected def doExecute(): RDD[InternalRow] = {
     val readTasks: java.util.List[ReadTask[UnsafeRow]] = reader match {
       case r: SupportsScanUnsafeRow => r.createUnsafeRowReadTasks()
+      case r: ContinuousReader =>
+        r.createReadTasks(java.util.Optional.ofNullable(continuousStartOffset.orNull)).asScala.map {
+          new RowToUnsafeRowReadTask(_, reader.readSchema()): ReadTask[UnsafeRow]
+        }.asJava
       case _ =>
         reader.createReadTasks().asScala.map {
           new RowToUnsafeRowReadTask(_, reader.readSchema()): ReadTask[UnsafeRow]

@@ -20,12 +20,13 @@ package org.apache.spark.sql.execution.streaming
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.logical.LeafNode
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.datasources.DataSource
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, ReadMicroBatchSupport}
+import org.apache.spark.sql.sources.v2.reader.ContinuousReader
 
 object StreamingRelation {
   def apply(dataSource: DataSource): StreamingRelation = {
@@ -113,7 +114,7 @@ case class StreamingExecutionRelationV2(
 }
 
 case class ContinuousExecutionRelation(
-    source: ContinuousReadSupport,
+    source: ContinuousReader,
     extraOptions: Map[String, String],
     output: Seq[Attribute])(session: SparkSession)
   extends LeafNode {

@@ -122,14 +122,15 @@ class ContinuousExecution(
   /**
    * All stream sources present in the query plan. This will be set when generating logical plan.
    */
-  @volatile protected var sources: Seq[ContinuousReadSupport] = Seq.empty
+  @volatile protected var sources: Seq[ContinuousReader] = Seq.empty
 
   /**
    * A list of unique sources in the query plan. This will be set when generating logical plan.
    */
-  @volatile private var uniqueSources: Seq[ContinuousReadSupport] = Seq.empty
+  @volatile private var uniqueSources: Seq[ContinuousReader] = Seq.empty
 
   override lazy val logicalPlan: LogicalPlan = {
+    import scala.collection.JavaConverters._
     assert(streamExecutionThread eq Thread.currentThread,
       "logicalPlan must be initialized in StreamExecutionThread " +
         s"but the current thread was ${Thread.currentThread}")
@@ -143,9 +144,14 @@ class ContinuousExecution(
           val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
           val source = dataSource
           nextSourceId += 1
-          // We still need to use the previous `output` instead of `source.schema` as attributes in
-          // "df.logicalPlan" has already used attributes of the previous `output`.
-          ContinuousExecutionRelation(source, extraReaderOptions, output)(sparkSession)
+
+          val reader = source.createContinuousReader(
+            java.util.Optional.empty[StructType](),
+            metadataPath,
+            new DataSourceV2Options(extraReaderOptions.asJava))
+          // We still need to use the previous `output` instead of `reader.schema` as attributes in
+          // "df.logicalPlan" have already used attributes of the previous `output`.
+          ContinuousExecutionRelation(reader, extraReaderOptions, output)(sparkSession)
         })
     }
     sources = _logicalPlan.collect {
@@ -430,24 +436,18 @@ class ContinuousExecution(
     import scala.collection.JavaConverters._
     // A list of attributes that will need to be updated.
     val replacements = new ArrayBuffer[(Attribute, Attribute)]
-    // Replace sources in the logical plan with data that has arrived since the last batch.
+    // Translate from continuous relation to the underlying data source.
     val withNewSources = logicalPlan transform {
-      case ContinuousExecutionRelation(source, extraReaderOptions, output) =>
-        // TODO multiple sources maybe?
+      case ContinuousExecutionRelation(reader, extraReaderOptions, output) =>
+        // TODO multiple sources maybe? offsets(0) has to be changed to track source id
         val nextSourceId = 0
-        val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
-        val reader = source.createContinuousReader(
-          java.util.Optional.ofNullable(offsets.offsets(0).orNull),
-          java.util.Optional.empty[StructType](),
-          metadataPath,
-          new DataSourceV2Options(extraReaderOptions.asJava))
         val newOutput = reader.readSchema().toAttributes
 
         assert(output.size == newOutput.size,
           s"Invalid reader: ${Utils.truncatedString(output, ",")} != " +
             s"${Utils.truncatedString(newOutput, ",")}")
         replacements ++= output.zip(newOutput)
-        DataSourceV2Relation(newOutput, reader)
+        DataSourceV2Relation(newOutput, reader, offsets.offsets(0))
     }
 
     // Rewire the plan to use the new attributes that were returned by the source.

@@ -39,7 +39,7 @@ object PushDownOperatorsToDataSource extends Rule[LogicalPlan] with PredicateHel
     // TODO: Ideally column pruning should be implemented via a plan property that is propagated
     // top-down, then we can simplify the logic here and only collect target operators.
     val filterPushed = plan transformUp {
-      case FilterAndProject(fields, condition, r @ DataSourceV2Relation(_, reader)) =>
+      case FilterAndProject(fields, condition, r @ DataSourceV2Relation(_, reader, _)) =>
         // Non-deterministic expressions are stateful and we must keep the input sequence unchanged
         // to avoid changing the result. This means, we can't evaluate the filter conditions that
         // are after the first non-deterministic condition ahead. Here we only try to push down
@@ -96,7 +96,7 @@ object PushDownOperatorsToDataSource extends Rule[LogicalPlan] with PredicateHel
           val required = requiredByParent ++ condition.references
           pushDownRequiredColumns(child, required)
 
-        case DataSourceV2Relation(fullOutput, reader) => reader match {
+        case DataSourceV2Relation(fullOutput, reader, _) => reader match {
           case r: SupportsPushDownRequiredColumns =>
             // Match original case of attributes.
             val attrMap = AttributeMap(fullOutput.zip(fullOutput))

@@ -163,7 +163,6 @@ final class DataStreamReader private[sql](sparkSession: SparkSession) extends Lo
           // TODO: What do we pass as the metadata log path? We just need some scratch space, the
           // schema can't depend on it
           val tempReaderForSchema = ds.createContinuousReader(
-            java.util.Optional.empty(),
             java.util.Optional.ofNullable(userSpecifiedSchema.orNull),
             "scratch/path/for/schema",
             options)
