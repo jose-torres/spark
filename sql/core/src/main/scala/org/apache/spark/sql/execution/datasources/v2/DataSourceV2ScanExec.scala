@@ -26,7 +26,8 @@ import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.metric.SQLMetrics
-import org.apache.spark.sql.execution.streaming.Offset
+import org.apache.spark.sql.execution.streaming.{ContinuousExecution, Offset, StreamExecution}
+import org.apache.spark.sql.execution.streaming.continuous.{EpochCoordinatorRef, SetReaderPartitions}
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.types.StructType
 
@@ -49,9 +50,14 @@ case class DataSourceV2ScanExec(
     val readTasks: java.util.List[ReadTask[UnsafeRow]] = reader match {
       case r: SupportsScanUnsafeRow => r.createUnsafeRowReadTasks()
       case r: ContinuousReader =>
-        r.createReadTasks(java.util.Optional.ofNullable(continuousStartOffset.orNull)).asScala.map {
-          new RowToUnsafeRowReadTask(_, reader.readSchema()): ReadTask[UnsafeRow]
-        }.asJava
+        val tasks = r.createReadTasks(java.util.Optional.ofNullable(continuousStartOffset.orNull))
+          .asScala.map {
+            new RowToUnsafeRowReadTask(_, reader.readSchema()): ReadTask[UnsafeRow]
+          }.asJava
+        EpochCoordinatorRef.get(
+          sparkContext.getLocalProperty(StreamExecution.QUERY_ID_KEY), sparkContext.env)
+          .askSync[Unit](SetReaderPartitions(tasks.size()))
+        tasks
       case _ =>
         reader.createReadTasks().asScala.map {
           new RowToUnsafeRowReadTask(_, reader.readSchema()): ReadTask[UnsafeRow]

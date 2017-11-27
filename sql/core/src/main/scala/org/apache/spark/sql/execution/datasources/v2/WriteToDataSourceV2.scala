@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.streaming.{ContinuousExecution, StreamExecution}
-import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef}
+import org.apache.spark.sql.execution.streaming.continuous.{CommitPartitionEpoch, EpochCoordinatorRef, SetWriterPartitions}
 import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
@@ -62,6 +62,10 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
     try {
       val runTask = writer match {
         case w: ContinuousWriter =>
+          EpochCoordinatorRef.get(
+            sparkContext.getLocalProperty(StreamExecution.QUERY_ID_KEY), sparkContext.env)
+            .askSync[Unit](SetWriterPartitions(rdd.getNumPartitions))
+
           (context: TaskContext, iter: Iterator[InternalRow]) =>
             DataWritingSparkTask.runContinuous(writeTask, context, iter)
         case _ =>
@@ -144,7 +148,7 @@ object DataWritingSparkTask extends Logging {
         dataWriter.abort()
         logError(s"Writer for partition ${context.partitionId()} aborted.")
       })
-      EpochCoordinatorRef.forExecutor(queryId, SparkEnv.get).send(
+      EpochCoordinatorRef.get(queryId, SparkEnv.get).send(
         CommitPartitionEpoch(context.partitionId(), currentEpoch, currentMsg)
       )
       currentEpoch += 1

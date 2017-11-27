@@ -106,7 +106,7 @@ class ContinuousDataSourceRDD(
     val reader = split.asInstanceOf[DataSourceRDDPartition].readTask.createDataReader()
     context.addTaskCompletionListener(_ => reader.close())
 
-    val epochEndpoint = EpochCoordinatorRef.forExecutor(
+    val epochEndpoint = EpochCoordinatorRef.get(
       context.getLocalProperty(StreamExecution.QUERY_ID_KEY), SparkEnv.get)
     val iter = new ContinuousDataSourceRDDIter(epochEndpoint, context, reader)
 

@@ -42,6 +42,9 @@ case class ReportPartitionOffset(
   epoch: Long,
   offsetJson: String)
 
+case class SetReaderPartitions(numPartitions: Int)
+case class SetWriterPartitions(numPartitions: Int)
+
 // Should be used only by ContinuousExecution during epoch advancement.
 case class IncrementAndGetEpoch()
 
@@ -69,7 +72,7 @@ object EpochCoordinatorRef extends Logging {
     ref
   }
 
-  def forExecutor(queryId: String, env: SparkEnv): RpcEndpointRef = synchronized {
+  def get(queryId: String, env: SparkEnv): RpcEndpointRef = synchronized {
     val rpcEndpointRef = RpcUtils.makeDriverRef(endpointName(queryId), env.conf, env.rpcEnv)
     logDebug("Retrieved existing EpochCoordinator endpoint")
     rpcEndpointRef
@@ -84,8 +87,8 @@ class EpochCoordinator(writer: ContinuousWriter,
                        override val rpcEnv: RpcEnv)
   extends ThreadSafeRpcEndpoint with Logging {
 
-  // TODO split this up and get it from the actual plan
-  private val numPartitions = 5
+  private var numReaderPartitions: Int = _
+  private var numWriterPartitions: Int = _
 
   // Should only be mutated by this coordinator's subthread.
   private var currentDriverEpoch = startEpoch
@@ -98,29 +101,30 @@ class EpochCoordinator(writer: ContinuousWriter,
   private val partitionOffsets =
     mutable.Map[(Long, Int), String]()
 
-  private def storeWriterCommit(epoch: Long, partition: Int, message: WriterCommitMessage): Unit = {
-    // TODO deduplicate and clean this logic
-    // we can't assume all the sequencing that's happening here
-    if (!partitionCommits.isDefinedAt((epoch, partition))) {
-      partitionCommits.put((epoch, partition), message)
-      val thisEpochCommits =
-        partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
-      val nextEpochOffsets =
-        partitionOffsets.collect { case ((e, _), o) if e == epoch + 1 => o }
-      if (thisEpochCommits.size == numPartitions && nextEpochOffsets.size == numPartitions) {
-        print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
-        // Sequencing is important - writer commits to epoch are required to be replayable
-        writer.commit(epoch, thisEpochCommits.toArray)
-        val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
-        query.commit(epoch)
-      }
+  private def resolveCommitsAtEpoch(epoch: Long) = {
+    val thisEpochCommits =
+      partitionCommits.collect { case ((e, _), msg) if e == epoch => msg }
+    val nextEpochOffsets =
+      partitionOffsets.collect { case ((e, _), o) if e == epoch + 1 => o }
+
+    if (thisEpochCommits.size == numWriterPartitions &&
+        nextEpochOffsets.size == numReaderPartitions) {
+      print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+      val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
+      // Sequencing is important - writer commits to epoch are required to be replayable
+      writer.commit(epoch, thisEpochCommits.toArray)
+      query.commit(epoch)
+      // TODO: cleanup unnecessary state
     }
   }
 
   override def receive: PartialFunction[Any, Unit] = {
     case CommitPartitionEpoch(partitionId, epoch, message) =>
       logError(s"Got commit from partition $partitionId at epoch $epoch: $message")
-      storeWriterCommit(epoch, partitionId, message)
+      if (!partitionCommits.isDefinedAt((epoch, partitionId))) {
+        partitionCommits.put((epoch, partitionId), message)
+        resolveCommitsAtEpoch(epoch)
+      }
 
     case ReportPartitionOffset(partitionId, epoch, offsetJson) =>
       val streams = session.streams
@@ -128,18 +132,10 @@ class EpochCoordinator(writer: ContinuousWriter,
       partitionOffsets.put((epoch, partitionId), offsetJson)
       val thisEpochOffsets =
         partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
-      if (thisEpochOffsets.size == numPartitions) {
+      if (thisEpochOffsets.size == numReaderPartitions) {
         logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
         query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
-      }
-      val previousEpochCommits =
-        partitionCommits.collect { case ((e, _), msg) if e == epoch - 1 => msg }
-      if (previousEpochCommits.size == numPartitions) {
-        print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
-        // Sequencing is important - writer commits to epoch are required to be replayable
-        writer.commit(epoch, previousEpochCommits.toArray)
-        val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
-        query.commit(epoch)
+        resolveCommitsAtEpoch(epoch - 1)
       }
   }
 
@@ -152,5 +148,13 @@ class EpochCoordinator(writer: ContinuousWriter,
     case IncrementAndGetEpoch() =>
       currentDriverEpoch += 1
       context.reply(currentDriverEpoch)
+
+    case SetReaderPartitions(numPartitions) =>
+      numReaderPartitions = numPartitions
+      context.reply(())
+
+    case SetWriterPartitions(numPartitions) =>
+      numWriterPartitions = numPartitions
+      context.reply(())
   }
 }
