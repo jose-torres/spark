@@ -114,7 +114,7 @@ case class StreamingExecutionRelationV2(
 }
 
 case class ContinuousExecutionRelation(
-    source: ContinuousReader,
+    source: ContinuousReadSupport,
     extraOptions: Map[String, String],
     output: Seq[Attribute])(session: SparkSession)
   extends LeafNode {

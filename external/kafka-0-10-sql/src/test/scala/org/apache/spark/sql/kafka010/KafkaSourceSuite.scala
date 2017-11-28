@@ -489,7 +489,53 @@ class KafkaSourceSuite extends KafkaSourceTest {
       .sink
 
     print(testUtils.sendMessages(topic, Seq(1, 2, 3).map{ _.toString }.toArray))
-    Thread.sleep(8500)
+    Thread.sleep(1500)
+    try {
+      assert(sink.allData.sortBy(_.getInt(0)) == Seq(1, 2, 3).sorted.map(Row(_)))
+    } finally {
+      query.stop()
+    }
+  }
+
+  test("continuous with reconfigure") {
+    val topicPrefix = newTopic()
+    testUtils.createTopic(s"$topicPrefix-1", partitions = 3)
+    testUtils.sendMessages(s"$topicPrefix-1", Array("0"))
+    require(testUtils.getLatestOffsets(Set(s"$topicPrefix-1")).size === 3)
+
+    val reader = spark
+      .readStream
+      .format("kafka")
+      .option("kafka.bootstrap.servers", testUtils.brokerAddress)
+      .option("subscribe", s"$topicPrefix-1")
+      .option("kafka.metadata.max.age.ms", "100")
+      .option("continuous", "true")
+
+    val kafka = reader.load()
+      .selectExpr("CAST(value AS STRING)")
+      .as[String]
+    val mapped = kafka.map(_.toInt)
+    val query = mapped.writeStream
+      .format("memory")
+      .queryName("memory")
+      .start()
+      .asInstanceOf[ContinuousExecution]
+    query.awaitInitialization(streamingTimeout.toMillis)
+
+    Thread.sleep(1000)
+
+    testUtils.addPartitions(s"$topicPrefix-1", 5)
+
+    require(testUtils.getLatestOffsets(Set(s"$topicPrefix-1")).size === 5)
+
+    print(testUtils.sendMessages(s"$topicPrefix-1", Seq(1, 2, 3).map{ _.toString }.toArray))
+    Thread.sleep(5500)
+
+    // TODO for some reason reconfigure won't reuse executor tasks?
+
+    val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
+      .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
+      .sink
     try {
       assert(sink.allData.sortBy(_.getInt(0)) == Seq(1, 2, 3).sorted.map(Row(_)))
     } finally {

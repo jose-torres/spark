@@ -136,29 +136,14 @@ class ContinuousExecution(
         s"but the current thread was ${Thread.currentThread}")
     var nextSourceId = 0L
     val toExecutionRelationMap = MutableMap[ContinuousRelation, ContinuousExecutionRelation]()
-    val _logicalPlan = analyzedPlan.transform {
-      case r @ ContinuousRelation(dataSource, _, extraReaderOptions, output) =>
+    analyzedPlan.transform {
+      case r @ ContinuousRelation(source, _, extraReaderOptions, output) =>
         toExecutionRelationMap.getOrElseUpdate(r, {
-          // Materialize reader to avoid creating it in every batch
-          // TODO: actually materialize it
-          val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
-          val source = dataSource
-          nextSourceId += 1
-
-          val reader = source.createContinuousReader(
-            java.util.Optional.empty[StructType](),
-            metadataPath,
-            new DataSourceV2Options(extraReaderOptions.asJava))
           // We still need to use the previous `output` instead of `reader.schema` as attributes in
           // "df.logicalPlan" have already used attributes of the previous `output`.
-          ContinuousExecutionRelation(reader, extraReaderOptions, output)(sparkSession)
+          ContinuousExecutionRelation(source, extraReaderOptions, output)(sparkSession)
         })
     }
-    sources = _logicalPlan.collect {
-      case s: ContinuousExecutionRelation => s.source
-    }
-    uniqueSources = sources.distinct
-    _logicalPlan
   }
 
   private val triggerExecutor = trigger match {
@@ -279,11 +264,19 @@ class ContinuousExecution(
       if (state.compareAndSet(INITIALIZING, ACTIVE)) {
         // Unblock `awaitInitialization`
         initializationLatch.countDown()
-
-        val startOffsets = getStartOffsets(sparkSessionToRunBatches)
         sparkSession.sparkContext.setJobDescription(getDescriptionString)
         logDebug(s"Stream running from $committedOffsets")
-        runFromOffsets(startOffsets, sparkSessionToRunBatches)
+        do {
+          try {
+            // TODO update start offsets on reconfigure
+            runFromOffsets(sparkSessionToRunBatches)
+          } catch {
+            case _: Throwable if state.get().equals(RECONFIGURING) =>
+              // swallow exception and run again
+              state.set(ACTIVE)
+          }
+        } while (true)
+
         updateStatusMessage("Stopped")
       } else {
         // `stop()` is already called. Let `finally` finish the cleanup.
@@ -432,21 +425,39 @@ class ContinuousExecution(
    * Processes any data available between `availableOffsets` and `committedOffsets`.
    * @param sparkSessionToRunBatch Isolated [[SparkSession]] to run this batch with.
    */
-  private def runFromOffsets(offsets: OffsetSeq, sparkSessionToRunBatch: SparkSession): Unit = {
+  private def runFromOffsets(sparkSessionToRunBatch: SparkSession): Unit = {
     import scala.collection.JavaConverters._
     // A list of attributes that will need to be updated.
     val replacements = new ArrayBuffer[(Attribute, Attribute)]
     // Translate from continuous relation to the underlying data source.
+    var nextSourceId = 0
+    sources = logicalPlan.collect {
+      case ContinuousExecutionRelation(dataSource, extraReaderOptions, output) =>
+        val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
+        nextSourceId += 1
+
+        dataSource.createContinuousReader(
+          java.util.Optional.empty[StructType](),
+          metadataPath,
+          new DataSourceV2Options(extraReaderOptions.asJava))
+    }
+    uniqueSources = sources.distinct
+
+    val offsets = getStartOffsets(sparkSessionToRunBatch)
+
+    var insertedSourceId = 0
     val withNewSources = logicalPlan transform {
-      case ContinuousExecutionRelation(reader, extraReaderOptions, output) =>
-        // TODO multiple sources maybe? offsets(0) has to be changed to track source id
-        val nextSourceId = 0
+      case ContinuousExecutionRelation(_, _, output) =>
+        val reader = sources(insertedSourceId)
+        insertedSourceId += 1
         val newOutput = reader.readSchema().toAttributes
 
         assert(output.size == newOutput.size,
           s"Invalid reader: ${Utils.truncatedString(output, ",")} != " +
             s"${Utils.truncatedString(newOutput, ",")}")
         replacements ++= output.zip(newOutput)
+
+        // TODO multiple sources maybe? offsets(0) has to be changed to track source id
         DataSourceV2Relation(newOutput, reader, offsets.offsets(0))
     }
 
@@ -500,12 +511,22 @@ class ContinuousExecution(
         triggerExecutor.execute(() => {
           startTrigger()
 
-          if (isActive) {
+          if (reader.needsReconfiguration()) {
+            stopSources()
+            state.set(RECONFIGURING)
+            if (streamExecutionThread.isAlive) {
+              sparkSession.sparkContext.cancelJobGroup(runId.toString)
+              streamExecutionThread.interrupt()
+              // Don't join - just close out the epoch thread and trust the stream
+            }
+            false
+          } else if (isActive) {
             currentEpochId = epochEndpoint.askSync[Long](IncrementAndGetEpoch())
             logInfo(s"New epoch $currentEpochId is starting.")
+            true
+          } else {
+            false
           }
-
-          isActive
         })
       }
     })
@@ -515,7 +536,8 @@ class ContinuousExecution(
       epochUpdateThread.start()
 
       reportTimeTaken("runContinuous") {
-        SQLExecution.withNewExecutionId(sparkSessionToRunBatch, lastExecution)(lastExecution.toRdd)
+        SQLExecution.withNewExecutionId(
+          sparkSessionToRunBatch, lastExecution)(lastExecution.toRdd)
       }
     } finally {
       SparkEnv.get.rpcEnv.stop(epochEndpoint)

@@ -131,16 +131,33 @@ class KafkaReaderV2(
     KafkaSourceOffset(result)
   }
 
+  // Initialized when creating read tasks. If this diverges from the partitions at the latest
+  // offsets, we need to reconfigure.
+  private var knownPartitions: Set[TopicPartition] = _
+
   override def readSchema: StructType = KafkaOffsetReader.kafkaSchema
 
-  override def createReadTasks(): java.util.List[ReadTask[Row]] = {
+  override def createReadTasks(
+      offset: java.util.Optional[Offset]): java.util.List[ReadTask[Row]] = {
     import scala.collection.JavaConverters._
-    // TODO handle new and deleted partitions
 
-    val fromPartitionOffsets = initialPartitionOffsets
+    val oldStartOffsets =
+      if (offset.isPresent) {
+        KafkaSourceOffset.getPartitionOffsets(offset.get())
+      } else {
+        initialPartitionOffsets
+      }
 
-    print(s"INIT2: ${fromPartitionOffsets.toSeq}")
-    fromPartitionOffsets.toSeq.map {
+    val newPartitions =
+      kafkaReader.fetchLatestOffsets().keySet.diff(oldStartOffsets.keySet)
+    val newPartitionOffsets = kafkaReader.fetchEarliestOffsets(newPartitions.toSeq)
+    // TODO handle data loss?
+    // TODO handle deleted partitions?
+    val startOffsets = oldStartOffsets ++ newPartitionOffsets
+
+    knownPartitions = startOffsets.keySet
+
+    startOffsets.toSeq.map {
       case (topicPartition, start) =>
         KafkaV2ReadTask(topicPartition, start, executorKafkaParams, pollTimeoutMs, failOnDataLoss)
           .asInstanceOf[ReadTask[Row]]
@@ -148,9 +165,14 @@ class KafkaReaderV2(
   }
 
   /** Stop this source and free any resources it has allocated. */
-  // TODO stop in base class
   def stop(): Unit = synchronized {
     kafkaReader.close()
+  }
+
+  override def commit(end: Offset): Unit = {}
+
+  override def needsReconfiguration(): Boolean = {
+    knownPartitions != null && kafkaReader.fetchLatestOffsets().keySet != knownPartitions
   }
 
   override def toString(): String = s"KafkaSource[$kafkaReader]"

@@ -105,10 +105,6 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       failOnDataLoss(caseInsensitiveParams))
   }
 
-  // TODO remove
-  override def commit(end: Offset): Unit = {}
-  override def stop(): Unit = {}
-
   override def createContinuousReader(
       schema: java.util.Optional[StructType],
       metadataPath: String,

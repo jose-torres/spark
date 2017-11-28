@@ -35,4 +35,8 @@ public interface ContinuousReader extends BaseStreamingSource, DataSourceV2Reade
         throw new IllegalStateException(
             "createReadTasks with no offset should not be called for ContinuousReader.");
     }
+
+    default boolean needsReconfiguration() {
+        return false;
+    }
 }

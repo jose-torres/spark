@@ -51,6 +51,7 @@ trait State
 case object INITIALIZING extends State
 case object ACTIVE extends State
 case object TERMINATED extends State
+case object RECONFIGURING extends State
 
 /**
  * Manages the execution of a streaming Spark SQL query that is occurring in a separate thread.
