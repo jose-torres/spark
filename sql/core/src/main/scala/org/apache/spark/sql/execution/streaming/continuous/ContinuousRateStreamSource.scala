@@ -122,6 +122,7 @@ class RateStreamDataReader(
 
     if (numReadRows == rowsPerSecond) {
       // Sleep until we reach the next second.
+
       while (System.currentTimeMillis < nextReadTime) {
         Thread.sleep(nextReadTime - System.currentTimeMillis)
       }

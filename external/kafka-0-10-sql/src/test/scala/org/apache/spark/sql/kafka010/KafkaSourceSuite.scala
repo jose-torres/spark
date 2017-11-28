@@ -531,8 +531,6 @@ class KafkaSourceSuite extends KafkaSourceTest {
     print(testUtils.sendMessages(s"$topicPrefix-1", Seq(1, 2, 3).map{ _.toString }.toArray))
     Thread.sleep(5500)
 
-    // TODO for some reason reconfigure won't reuse executor tasks?
-
     val sink = query.lastExecution.executedPlan.find(_.isInstanceOf[WriteToDataSourceV2Exec]).get
       .asInstanceOf[WriteToDataSourceV2Exec].writer.asInstanceOf[ContinuousMemoryWriter]
       .sink

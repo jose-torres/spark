@@ -81,7 +81,9 @@ case class WriteToDataSourceV2Exec(writer: DataSourceV2Writer, query: SparkPlan)
       )
 
       logInfo(s"Data source writer $writer is committing.")
-      writer.commit(messages)
+      if (!writer.isInstanceOf[ContinuousWriter]) {
+        writer.commit(messages)
+      }
       logInfo(s"Data source writer $writer committed.")
     } catch {
       case cause: Throwable =>

@@ -57,6 +57,10 @@ class ContinuousDataSourceRDDIter(
   var outputMarker = new AtomicBoolean(false)
 
   override def hasNext: Boolean = {
+    if (context.isInterrupted()) {
+      // On interrupt, end the iterator so the writer can stop itself, but don't report a new epoch.
+      return false
+    }
     // When we see a marker, report the reader's current next offset as the start of the next epoch.
     val result = wrappedHasNext
     if (!result) {
@@ -117,6 +121,9 @@ class ContinuousDataSourceRDD(
         ProcessingTimeExecutor(ProcessingTime(900), new SystemClock())
           .execute { () =>
             if (context.isInterrupted()) {
+              // Call outputMarker so the reader knows to interrupt any long polls.
+              reader.asInstanceOf[RowToUnsafeDataReader]
+                .rowReader.asInstanceOf[ContinuousDataReader[Row]].outputMarker()
               false
             } else {
               val newEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
@@ -137,7 +144,7 @@ class ContinuousDataSourceRDD(
 
     epochPollThread.setDaemon(true)
     epochPollThread.start()
-    new InterruptibleIterator(context, iter)
+    iter
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
