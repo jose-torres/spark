@@ -109,7 +109,7 @@ class EpochCoordinator(writer: ContinuousWriter,
 
     if (thisEpochCommits.size == numWriterPartitions &&
         nextEpochOffsets.size == numReaderPartitions) {
-      print(s"Epoch $epoch has received commits from all partitions. Committing globally.")
+      logDebug(s"Epoch $epoch has received commits from all partitions. Committing globally.")
       val query = session.streams.get(queryId).asInstanceOf[ContinuousExecution]
       // Sequencing is important - writer commits to epoch are required to be replayable
       writer.commit(epoch, thisEpochCommits.toArray)
@@ -120,7 +120,7 @@ class EpochCoordinator(writer: ContinuousWriter,
 
   override def receive: PartialFunction[Any, Unit] = {
     case CommitPartitionEpoch(partitionId, epoch, message) =>
-      logError(s"Got commit from partition $partitionId at epoch $epoch: $message")
+      logDebug(s"Got commit from partition $partitionId at epoch $epoch: $message")
       if (!partitionCommits.isDefinedAt((epoch, partitionId))) {
         partitionCommits.put((epoch, partitionId), message)
         resolveCommitsAtEpoch(epoch)
@@ -133,7 +133,7 @@ class EpochCoordinator(writer: ContinuousWriter,
       val thisEpochOffsets =
         partitionOffsets.collect { case ((e, _), o) if e == epoch => o }
       if (thisEpochOffsets.size == numReaderPartitions) {
-        logError(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
+        logDebug(s"Epoch $epoch has offsets reported from all partitions: $thisEpochOffsets")
         query.addOffset(epoch, reader, thisEpochOffsets.map(SerializedOffset(_)).toSeq)
         resolveCommitsAtEpoch(epoch - 1)
       }

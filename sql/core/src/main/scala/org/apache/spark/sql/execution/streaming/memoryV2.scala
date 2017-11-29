@@ -323,14 +323,12 @@ class MemoryDataWriter(partition: Int, outputMode: OutputMode)
   private val data = mutable.Buffer[Row]()
 
   override def write(row: Row): Unit = {
-    print(s"WROTE $row ${System.currentTimeMillis()}\n")
     data.append(row)
   }
 
   override def commit(): MemoryWriterCommitMessage = {
     // Clear the buffer so we can use this writer for both microbatch and continuous streaming.
     val msg = MemoryWriterCommitMessage(partition, data.clone())
-    print(s"")
     data.clear()
     msg
   }

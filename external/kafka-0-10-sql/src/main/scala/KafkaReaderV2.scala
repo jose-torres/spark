@@ -263,7 +263,6 @@ class KafkaV2DataReader(
       currentRecord.offset,
       DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(currentRecord.timestamp)),
       currentRecord.timestampType.id)
-    print(s"ROW: $kafkaPartition ${new String(currentRecord.value())}\n")
     encoder.fromRow(baseRow)
   }
 

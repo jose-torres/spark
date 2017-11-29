@@ -141,7 +141,6 @@ object DataWritingSparkTask extends Logging {
         iter.foreach(dataWriter.write)
         logInfo(s"Writer for partition ${context.partitionId()} is committing.")
         val msg = dataWriter.commit()
-        print(s"Committing epoch $currentEpoch $msg\n")
         logInfo(s"Writer for partition ${context.partitionId()} committed.")
         msg
       })(catchBlock = {

@@ -54,8 +54,6 @@ class ContinuousDataSourceRDDIter(
     startEpoch
   }
 
-  var outputMarker = new AtomicBoolean(false)
-
   override def hasNext: Boolean = {
     if (context.isInterrupted()) {
       // On interrupt, end the iterator so the writer can stop itself, but don't report a new epoch.
@@ -132,7 +130,7 @@ class ContinuousDataSourceRDD(
                   reader.asInstanceOf[RowToUnsafeDataReader]
                     .rowReader.asInstanceOf[ContinuousDataReader[Row]].outputMarker()
                 }
-                logError(s"Set marker for epoch $newEpoch")
+                logDebug(s"Set marker for epoch $newEpoch")
                 currentEpoch = newEpoch
               }
 

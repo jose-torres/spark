@@ -411,7 +411,6 @@ trait ContinuousStreamTest
               case _: StreamingQueryException =>
                 // Ignore the exception. `StopStream` or `ExpectFailure` will catch it as well.
             }
-            print(s"AAAAAA ${currentStream.logicalPlan}")
 
           case AdvanceManualClock(timeToAdd) =>
             verify(currentStream != null,
