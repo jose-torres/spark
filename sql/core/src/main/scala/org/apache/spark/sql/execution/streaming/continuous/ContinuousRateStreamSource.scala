@@ -23,6 +23,7 @@ import org.json4s.DefaultFormats
 import org.json4s.jackson.Serialization
 
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming.{LongOffset, Offset, SerializedOffset}
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceV2, DataSourceV2Options}
@@ -66,7 +67,7 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
   }
 
   override def createReadTasks(
-      offset: java.util.Optional[Offset]): java.util.List[ReadTask[Row]] = {
+      offset: java.util.Optional[Offset]): java.util.List[ReadTask[UnsafeRow]] = {
     val partitionStartMap = Option(offset.orElse(null)).map {
       case o: ContinuousRateStreamOffset => o.partitionToStartValue
       case s: SerializedOffset => Serialization.read[Map[Int, Long]](s.json)
@@ -82,7 +83,8 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
       val start = partitionStartMap.flatMap(_.get(n)).getOrElse(0L + n)
       // Have each partition advance by numPartitions each row, with starting points staggered
       // by their partition index.
-      RateStreamReadTask(start, n, numPartitions, perPartitionRate).asInstanceOf[ReadTask[Row]]
+      RateStreamReadTask(start, n, numPartitions, perPartitionRate)
+        .asInstanceOf[ReadTask[UnsafeRow]]
     }.asJava
   }
 

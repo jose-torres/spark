@@ -678,7 +678,7 @@ class ContinuousExecution(
   override def explain(): Unit = explain(extended = false)
 
   override def toString: String = {
-    s"Streaming Query $prettyIdString [state = $state]"
+    s"Continuous Streaming Query $prettyIdString [state = $state]"
   }
 
   private def toDebugString(includeLogicalPlan: Boolean): String = {

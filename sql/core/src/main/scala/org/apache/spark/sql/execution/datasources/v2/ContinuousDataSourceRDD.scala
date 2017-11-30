@@ -44,9 +44,8 @@ class ContinuousDataSourceRDDIter(
   var currentEpoch = {
     val startEpoch = context.getLocalProperty(ContinuousExecution.START_EPOCH_KEY).toLong
     val offsetJson = reader match {
-      case r: RowToUnsafeDataReader =>
-        r.rowReader.asInstanceOf[ContinuousDataReader[Row]].getOffset().json
-      case _ => throw new IllegalStateException("must have ContinuousDataReader[Row]")
+      case r: ContinuousDataReader[UnsafeRow] => r.getOffset().json
+      case _ => throw new IllegalStateException("must have ContinuousDataReader[UnsafeRow]")
     }
     epochEndpoint.send(ReportPartitionOffset(
       context.partitionId(), startEpoch, offsetJson))
@@ -63,9 +62,8 @@ class ContinuousDataSourceRDDIter(
     val result = wrappedHasNext
     if (!result) {
       val offsetJson = reader match {
-        case r: RowToUnsafeDataReader =>
-          r.rowReader.asInstanceOf[ContinuousDataReader[Row]].getOffset().json
-        case _ => throw new IllegalStateException("must have ContinuousDataReader[Row]")
+        case r: ContinuousDataReader[UnsafeRow] => r.getOffset().json
+        case _ => throw new IllegalStateException("must have ContinuousDataReader[UnsafeRow]")
       }
       currentEpoch += 1
       epochEndpoint.send(ReportPartitionOffset(
@@ -120,15 +118,13 @@ class ContinuousDataSourceRDD(
           .execute { () =>
             if (context.isInterrupted()) {
               // Call outputMarker so the reader knows to interrupt any long polls.
-              reader.asInstanceOf[RowToUnsafeDataReader]
-                .rowReader.asInstanceOf[ContinuousDataReader[Row]].outputMarker()
+              reader.asInstanceOf[ContinuousDataReader[UnsafeRow]].outputMarker()
               false
             } else {
               val newEpoch = epochEndpoint.askSync[Long](GetCurrentEpoch())
               if (currentEpoch < newEpoch) {
                 for (_ <- currentEpoch to newEpoch - 1) {
-                  reader.asInstanceOf[RowToUnsafeDataReader]
-                    .rowReader.asInstanceOf[ContinuousDataReader[Row]].outputMarker()
+                  reader.asInstanceOf[ContinuousDataReader[UnsafeRow]].outputMarker()
                 }
                 logDebug(s"Set marker for epoch $newEpoch")
                 currentEpoch = newEpoch

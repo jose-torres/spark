@@ -31,13 +31,14 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{DataFrame, Row, SparkSession, SQLContext}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.codegen.{BufferHolder, UnsafeRowWriter}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming.{HDFSMetadataLog, Offset, SerializedOffset}
 import org.apache.spark.sql.kafka010.KafkaSource.{getSortedExecutorList, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE, VERSION}
 import org.apache.spark.sql.kafka010.KafkaSourceProvider.{kafkaParamsForProducer, TOPIC_OPTION_KEY}
 import org.apache.spark.sql.sources.v2.{ContinuousWriteSupport, DataSourceV2, DataSourceV2Options}
-import org.apache.spark.sql.sources.v2.reader.{ContinuousDataReader, ContinuousReader, DataSourceV2Reader, ReadTask}
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.{BinaryType, StringType, StructType}
@@ -49,7 +50,8 @@ class KafkaReaderV2(
     sourceOptions: Map[String, String],
     metadataPath: String,
     startingOffsets: KafkaOffsetRangeLimit,
-    failOnDataLoss: Boolean) extends DataSourceV2Reader with ContinuousReader with Logging {
+    failOnDataLoss: Boolean)
+  extends DataSourceV2Reader with ContinuousReader with Logging {
 
   override def mergeOffsets(offsets: Array[Offset]): Offset = {
     val mergedMap = offsets.map(KafkaSourceOffset.getPartitionOffsets).reduce(_ ++ _)
@@ -138,7 +140,7 @@ class KafkaReaderV2(
   override def readSchema: StructType = KafkaOffsetReader.kafkaSchema
 
   override def createReadTasks(
-      offset: java.util.Optional[Offset]): java.util.List[ReadTask[Row]] = {
+      offset: java.util.Optional[Offset]): java.util.List[ReadTask[UnsafeRow]] = {
     import scala.collection.JavaConverters._
 
     val oldStartOffsets =
@@ -160,7 +162,7 @@ class KafkaReaderV2(
     startOffsets.toSeq.map {
       case (topicPartition, start) =>
         KafkaV2ReadTask(topicPartition, start, executorKafkaParams, pollTimeoutMs, failOnDataLoss)
-          .asInstanceOf[ReadTask[Row]]
+          .asInstanceOf[ReadTask[UnsafeRow]]
     }.asJava
   }
 
@@ -196,7 +198,7 @@ case class KafkaV2ReadTask(
     kafkaParams: java.util.Map[String, Object],
     pollTimeoutMs: Long,
     failOnDataLoss: Boolean)
-  extends ReadTask[Row] {
+  extends ReadTask[UnsafeRow] {
   override def createDataReader(): KafkaV2DataReader = {
     new KafkaV2DataReader(topicPartition, start, kafkaParams, pollTimeoutMs, failOnDataLoss)
   }
@@ -208,7 +210,7 @@ class KafkaV2DataReader(
     kafkaParams: java.util.Map[String, Object],
     pollTimeoutMs: Long,
     failOnDataLoss: Boolean)
-  extends ContinuousDataReader[Row] {
+  extends ContinuousDataReader[UnsafeRow] {
   private val topic = topicPartition.topic
   private val kafkaPartition = topicPartition.partition
   private val consumer = CachedKafkaConsumer.createUncached(topic, kafkaPartition, kafkaParams)
@@ -253,17 +255,27 @@ class KafkaV2DataReader(
     }
   }
 
-  override def get(): Row = {
-    val encoder = RowEncoder.apply(KafkaOffsetReader.kafkaSchema).resolveAndBind()
-    val baseRow = InternalRow(
-      currentRecord.key,
-      currentRecord.value,
-      UTF8String.fromString(currentRecord.topic),
-      currentRecord.partition,
-      currentRecord.offset,
-      DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(currentRecord.timestamp)),
-      currentRecord.timestampType.id)
-    encoder.fromRow(baseRow)
+  val sharedRow = new UnsafeRow(7)
+  val bufferHolder = new BufferHolder(sharedRow)
+  val rowWriter = new UnsafeRowWriter(bufferHolder, 7)
+
+  override def get(): UnsafeRow = {
+    bufferHolder.reset()
+
+    if (currentRecord.key == null) {
+      rowWriter.isNullAt(0)
+    } else {
+      rowWriter.write(0, currentRecord.key)
+    }
+    rowWriter.write(1, currentRecord.value)
+    rowWriter.write(2, UTF8String.fromString(currentRecord.topic))
+    rowWriter.write(3, currentRecord.partition)
+    rowWriter.write(4, currentRecord.offset)
+    rowWriter.write(5,
+      DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(currentRecord.timestamp)))
+    rowWriter.write(6, currentRecord.timestampType.id)
+    sharedRow.setTotalSize(bufferHolder.totalSize)
+    sharedRow
   }
 
   override def getOffset(): KafkaSourceOffset = {

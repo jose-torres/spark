@@ -88,6 +88,8 @@ class KafkaLatencySuite extends QueryTest
       .option("continuous", "true")
       .load()
 
+    df.explain()
+
     val currentTimeMillis = udf(() => System.currentTimeMillis)
     val realTimestamp = udf((time: java.sql.Timestamp) => time.getTime)
 
@@ -107,9 +109,11 @@ class KafkaLatencySuite extends QueryTest
 
     print("starting input\n")
 
-    spark.range(1, 500, 1, 1)
+    print(stream)
+
+    spark.range(1, 625, 1, 1)
       .as[Long]
-      .map(i => {Thread.sleep(100); i})
+      .map(i => {Thread.sleep(80); i})
       .select(currentTimeMillis().cast("string") as 'value)
       .write
       .format("kafka")
@@ -119,6 +123,7 @@ class KafkaLatencySuite extends QueryTest
 
     print("input complete\n")
 
+    Thread.sleep(1000)
     stream.processAllAvailable()
 
     val schema = new StructType()
@@ -146,7 +151,7 @@ class KafkaLatencySuite extends QueryTest
         $"outputTime" - $"ingestTime" as 'kafka2KafkaLatency)
 
     val latencyAgg = latencies
-      .groupBy(window($"timestamp", "10 seconds").getField("start") as 'timeBucket)
+      .groupBy(window($"timestamp", "10 seconds").getField("start") as 'timeBucketForRecordCreation)
       .agg(
         count("*") as 'count,
         format_number(avg($"kafka2KafkaLatency"), 2) as 'kafka2KafkaLatency,
@@ -156,11 +161,11 @@ class KafkaLatencySuite extends QueryTest
         format_number(min($"totalLatency"), 2) as 'minLatency,
         format_number(avg($"totalLatency"), 2) as 'avgLatency,
         format_number(max($"totalLatency"), 2) as 'maxLatency)
-      .orderBy($"timeBucket")
+      .orderBy($"timeBucketForRecordCreation")
 
     // scalastyle:off println
     println(latencyAgg.schema.map(_.name).mkString("\t"))
-    latencyAgg.collect().map(_.mkString("\t")).foreach(println)
+    latencyAgg.collect().map(_.mkString("\t\t")).foreach(println)
     // scalastyle:on println
   }
 }

@@ -64,6 +64,13 @@ class KafkaDataWriter(
   private lazy val producer = CachedKafkaProducer.getOrCreate(
     new java.util.HashMap[String, Object](producerParams.asJava))
 
+  private val callback = new Callback() {
+    override def onCompletion(recordMetadata: RecordMetadata, e: Exception): Unit = {
+      if (failedWrite == null && e != null) {
+        failedWrite = e
+      }
+    }
+  }
 
   def write(row: InternalRow): Unit = {
     if (failedWrite != null) return
@@ -72,18 +79,12 @@ class KafkaDataWriter(
     val topic = projectedRow.getUTF8String(0)
     val key = projectedRow.getBinary(1)
     val value = projectedRow.getBinary(2)
+
     if (topic == null) {
       throw new NullPointerException(s"null topic present in the data. Use the " +
         s"${KafkaSourceProvider.TOPIC_OPTION_KEY} option for setting a default topic.")
     }
     val record = new ProducerRecord[Array[Byte], Array[Byte]](topic.toString, key, value)
-    val callback = new Callback() {
-      override def onCompletion(recordMetadata: RecordMetadata, e: Exception): Unit = {
-        if (failedWrite == null && e != null) {
-          failedWrite = e
-        }
-      }
-    }
     producer.send(record, callback)
   }
 

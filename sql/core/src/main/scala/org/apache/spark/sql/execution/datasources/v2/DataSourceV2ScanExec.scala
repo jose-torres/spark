@@ -51,9 +51,6 @@ case class DataSourceV2ScanExec(
       case r: SupportsScanUnsafeRow => r.createUnsafeRowReadTasks()
       case r: ContinuousReader =>
         val tasks = r.createReadTasks(java.util.Optional.ofNullable(continuousStartOffset.orNull))
-          .asScala.map {
-            new RowToUnsafeRowReadTask(_, reader.readSchema()): ReadTask[UnsafeRow]
-          }.asJava
         EpochCoordinatorRef.get(
           sparkContext.getLocalProperty(StreamExecution.QUERY_ID_KEY), sparkContext.env)
           .askSync[Unit](SetReaderPartitions(tasks.size()))

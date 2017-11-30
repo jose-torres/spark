@@ -474,6 +474,8 @@ class KafkaSourceSuite extends KafkaSourceTest {
     val kafka = reader.load()
       .selectExpr("CAST(value AS STRING)")
       .as[String]
+
+    kafka.explain()
     val mapped = kafka.map(_.toInt)
     val query = mapped.writeStream
       .format("memory")
