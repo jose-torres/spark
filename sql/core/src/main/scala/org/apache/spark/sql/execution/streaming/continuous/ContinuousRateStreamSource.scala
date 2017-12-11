@@ -75,6 +75,9 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
 
   override def getStartOffset(): Offset = offset.get()
 
+  // Exposed so unit tests can reliably ensure they end after a desired row count.
+  private[sql] var lastStartTime: Long = _
+
   override def createReadTasks(): java.util.List[ReadTask[Row]] = {
     val partitionStartMap = Option(offset.orElse(null)).map {
       case o: ContinuousRateStreamOffset => o.partitionToStartValue
@@ -85,13 +88,16 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
       throw new IllegalArgumentException("Start offset contained too many partitions.")
     }
     val perPartitionRate = rowsPerSecond.toDouble / numPartitions.toDouble
+    val startTime = System.currentTimeMillis()
+    lastStartTime = startTime
 
     Range(0, numPartitions).map { n =>
-      // If the offset doesn't have a value for this partition, start from the beginning.
-      val start = partitionStartMap.flatMap(_.get(n)).getOrElse(0L + n)
+      // If the offset doesn't have a value for this partition, start from the beginning. Note that
+      // start offset is exclusive.
+      val start = partitionStartMap.flatMap(_.get(n)).getOrElse(0L + n - numPartitions)
       // Have each partition advance by numPartitions each row, with starting points staggered
       // by their partition index.
-      RateStreamReadTask(start, n, numPartitions, perPartitionRate)
+      RateStreamReadTask(start, startTime, n, numPartitions, perPartitionRate)
         .asInstanceOf[ReadTask[Row]]
     }.asJava
   }
@@ -102,47 +108,37 @@ class ContinuousRateStreamReader(options: DataSourceV2Options)
 }
 
 case class RateStreamReadTask(
-    startValue: Long, partitionIndex: Int, increment: Long, rowsPerSecond: Double)
+    startValue: Long, startTime: Long, partitionIndex: Int, increment: Long, rowsPerSecond: Double)
   extends ReadTask[Row] {
   override def createDataReader(): DataReader[Row] =
-    new RateStreamDataReader(startValue, partitionIndex, increment, rowsPerSecond.toLong)
+    new RateStreamDataReader(startValue, startTime, partitionIndex, increment, rowsPerSecond.toLong)
 }
 
 class RateStreamDataReader(
-    startValue: Long, partitionIndex: Int, increment: Long, rowsPerSecond: Long)
+    startValue: Long, startTime: Long, partitionIndex: Int, increment: Long, rowsPerSecond: Long)
   extends ContinuousDataReader[Row] {
-  private var nextReadTime = 0L
+  private var nextReadTime = startTime + 1000
   private var numReadRows = 0L
 
   private var currentValue = startValue
   private var currentRow: Row = null
 
   override def next(): Boolean = {
-    // Set the timestamp for the first time.
-    if (currentRow == null) nextReadTime = System.currentTimeMillis() + 1000
-
     if (numReadRows == rowsPerSecond) {
       // Sleep until we reach the next second.
-
-      try {
-        while (System.currentTimeMillis < nextReadTime) {
-          Thread.sleep(nextReadTime - System.currentTimeMillis)
-        }
-      } catch {
-        case _: InterruptedException =>
-          // Someone's trying to end the task; just let them.
-          return false
+      while (System.currentTimeMillis < nextReadTime) {
+        Thread.sleep(nextReadTime - System.currentTimeMillis)
       }
+
       numReadRows = 0
       nextReadTime += 1000
     }
 
+    currentValue += increment
     currentRow = Row(
       DateTimeUtils.toJavaTimestamp(DateTimeUtils.fromMillis(System.currentTimeMillis)),
       currentValue)
-    currentValue += increment
     numReadRows += 1
-
     true
   }
 
@@ -151,5 +147,5 @@ class RateStreamDataReader(
   override def close(): Unit = {}
 
   override def getOffset(): PartitionOffset =
-    ContinuousRateStreamPartitionOffset(partitionIndex, currentValue - increment)
+    ContinuousRateStreamPartitionOffset(partitionIndex, currentValue)
 }
