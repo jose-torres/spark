@@ -39,6 +39,7 @@ import org.apache.spark.sql.execution.streaming.state.{StateStore, StateStoreCon
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.StreamSourceProvider
+import org.apache.spark.sql.sources.v2.reader.Offset
 import org.apache.spark.sql.streaming.util.StreamManualClock
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 import org.apache.spark.util.Utils
@@ -77,7 +78,7 @@ class StreamSuite extends StreamTest {
   }
 
   test("StreamingRelation.computeStats") {
-    val streamingRelation = spark.readStream.format("rate").load().logicalPlan collect {
+    val streamingRelation = spark.readStream.format("memory").load().logicalPlan collect {
       case s: StreamingRelation => s
     }
     assert(streamingRelation.nonEmpty, "cannot find StreamingRelation")
