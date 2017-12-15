@@ -51,7 +51,7 @@ import org.apache.spark.util.{ManualClock, SystemClock}
  *    be resource constrained, and `numPartitions` can be tweaked to help reach the desired speed.
  */
 class RateSourceProvider extends StreamSourceProvider with DataSourceRegister
-  with DataSourceV2 with MicroBatchReadSupport with ContinuousReadSupport{
+  with DataSourceV2 with ContinuousReadSupport {
 
   override def sourceSchema(
       sqlContext: SQLContext,
@@ -104,13 +104,6 @@ class RateSourceProvider extends StreamSourceProvider with DataSourceRegister
       numPartitions,
       params.get("useManualClock").map(_.toBoolean).getOrElse(false) // Only for testing
     )
-  }
-
-  override def createMicroBatchReader(
-      schema: Optional[StructType],
-      checkpointLocation: String,
-      options: DataSourceV2Options): MicroBatchReader = {
-    new RateStreamV2Reader(options)
   }
 
   override def createContinuousReader(
