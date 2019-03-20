@@ -35,9 +35,14 @@ class SessionStateSuite extends SparkFunSuite {
    */
   protected var activeSession: SparkSession = _
 
+  private val configKeyWithDefaultValue = "spark-config-clone-with-default"
+
   override def beforeAll(): Unit = {
     super.beforeAll()
-    activeSession = SparkSession.builder().master("local").getOrCreate()
+    activeSession = SparkSession.builder()
+      .config(configKeyWithDefaultValue, "global")
+      .master("local")
+      .getOrCreate()
   }
 
   override def afterAll(): Unit = {
@@ -71,6 +76,26 @@ class SessionStateSuite extends SparkFunSuite {
       assert(forkedSession.conf.get(key) == "forked")
     } finally {
       activeSession.conf.unset(key)
+    }
+  }
+
+  test("fork new session and inherit RuntimeConfig overrides") {
+    try {
+      activeSession.conf.set(configKeyWithDefaultValue, "active")
+
+      // inheritance
+      val forkedSession = activeSession.cloneSession()
+      assert(forkedSession ne activeSession)
+      assert(forkedSession.conf ne activeSession.conf)
+      assert(forkedSession.conf.get(configKeyWithDefaultValue) == "active")
+
+      // independence
+      forkedSession.conf.set(configKeyWithDefaultValue, "forked")
+      assert(activeSession.conf.get(configKeyWithDefaultValue) == "active")
+      activeSession.conf.set(configKeyWithDefaultValue, "dontcopyme")
+      assert(forkedSession.conf.get(configKeyWithDefaultValue) == "forked")
+    } finally {
+      activeSession.conf.unset(configKeyWithDefaultValue)
     }
   }
 

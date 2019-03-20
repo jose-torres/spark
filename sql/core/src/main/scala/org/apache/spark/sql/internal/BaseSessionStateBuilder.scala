@@ -18,6 +18,7 @@ package org.apache.spark.sql.internal
 
 import org.apache.spark.SparkConf
 import org.apache.spark.annotation.{Experimental, Unstable}
+import org.apache.spark.internal.config.LEGACY_SESSION_INIT_WITH_DEFAULTS
 import org.apache.spark.sql.{ExperimentalMethods, SparkSession, UDFRegistration, _}
 import org.apache.spark.sql.catalyst.analysis.{Analyzer, FunctionRegistry}
 import org.apache.spark.sql.catalyst.catalog.SessionCatalog
@@ -72,22 +73,27 @@ abstract class BaseSessionStateBuilder(
   /**
    * Extract entries from `SparkConf` and put them in the `SQLConf`
    */
-  protected def mergeSparkConf(sqlConf: SQLConf, sparkConf: SparkConf): Unit = {
+  protected def mergeSparkConf(sqlConf: SQLConf, sparkConf: SparkConf): SQLConf = {
     sparkConf.getAll.foreach { case (k, v) =>
       sqlConf.setConfString(k, v)
     }
+
+    sqlConf
   }
 
   /**
    * SQL-specific key-value configurations.
    *
-   * These either get cloned from a pre-existing instance or newly created. The conf is always
-   * merged with its [[SparkConf]].
+   * These either get cloned from a pre-existing instance or newly created. A newly created conf
+   * is merged with the [[SparkConf]].
    */
   protected lazy val conf: SQLConf = {
-    val conf = parentState.map(_.conf.clone()).getOrElse(new SQLConf)
-    mergeSparkConf(conf, session.sparkContext.conf)
-    conf
+    parentState match {
+      case None => mergeSparkConf(new SQLConf, session.sparkContext.conf)
+      case Some(state) if (session.sparkContext.conf.get(LEGACY_SESSION_INIT_WITH_DEFAULTS)) =>
+        mergeSparkConf(state.conf.clone(), session.sparkContext.conf)
+      case Some(state) => state.conf.clone()
+    }
   }
 
   /**
@@ -324,6 +330,5 @@ private[sql] trait WithTestConf { self: BaseSessionStateBuilder =>
       }
     }
     mergeSparkConf(conf, session.sparkContext.conf)
-    conf
   }
 }

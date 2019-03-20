@@ -1302,4 +1302,11 @@ package object config {
     .doc("Staging directory used while submitting applications.")
     .stringConf
     .createOptional
+
+  private[spark] val LEGACY_SESSION_INIT_WITH_DEFAULTS =
+    ConfigBuilder("spark.legacy.sessionInitWithConfigDefaults")
+      .doc("Flag to revert to legacy behavior where a cloned SparkSession receives SparkConf " +
+        "defaults, dropping any overrides in its parent SparkSession.")
+      .booleanConf
+      .createWithDefault(false)
 }
