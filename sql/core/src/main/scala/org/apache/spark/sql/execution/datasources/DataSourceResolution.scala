@@ -108,26 +108,6 @@ case class DataSourceResolution(
     case DropViewStatement(AsTableIdentifier(tableName), ifExists) =>
       DropTableCommand(tableName, ifExists, isView = true, purge = false)
 
-    case AlterTableSetPropertiesStatement(AsTableIdentifier(table), properties) =>
-      AlterTableSetPropertiesCommand(table, properties, isView = false)
-
-    case AlterViewSetPropertiesStatement(AsTableIdentifier(table), properties) =>
-      AlterTableSetPropertiesCommand(table, properties, isView = true)
-
-    case AlterTableUnsetPropertiesStatement(AsTableIdentifier(table), propertyKeys, ifExists) =>
-      AlterTableUnsetPropertiesCommand(table, propertyKeys, ifExists, isView = false)
-
-    case AlterViewUnsetPropertiesStatement(AsTableIdentifier(table), propertyKeys, ifExists) =>
-      AlterTableUnsetPropertiesCommand(table, propertyKeys, ifExists, isView = true)
-
-    case AlterTableSetLocationStatement(AsTableIdentifier(table), newLocation) =>
-      AlterTableSetLocationCommand(table, None, newLocation)
-
-    case AlterTableAddColumnsStatement(AsTableIdentifier(table), newColumns)
-        if newColumns.forall(_.name.size == 1) =>
-      // only top-level adds are supported using AlterTableAddColumnsCommand
-      AlterTableAddColumnsCommand(table, newColumns.map(convertToStructField))
-
     case DataSourceV2Relation(CatalogTableAsV2(catalogTable), _, _) =>
       UnresolvedCatalogRelation(catalogTable)
   }

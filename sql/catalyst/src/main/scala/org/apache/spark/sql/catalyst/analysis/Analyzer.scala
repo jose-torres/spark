@@ -769,7 +769,7 @@ class Analyzer(
     import org.apache.spark.sql.catalog.v2.CatalogV2Implicits._
     override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
       case alter @ AlterTableAddColumnsStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), cols) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), cols) =>
         val changes = cols.map { col =>
           TableChange.addColumn(col.name.toArray, col.dataType, true, col.comment.orNull)
         }
@@ -780,7 +780,7 @@ class Analyzer(
           changes)
 
       case alter @ AlterTableAlterColumnStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), colName, dataType, comment) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), colName, dataType, comment) =>
         val typeChange = dataType.map { newDataType =>
           TableChange.updateColumnType(colName.toArray, newDataType, true)
         }
@@ -795,14 +795,14 @@ class Analyzer(
           typeChange.toSeq ++ commentChange.toSeq)
 
       case alter @ AlterTableRenameColumnStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), col, newName) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), col, newName) =>
         AlterTable(
           v2Catalog.asTableCatalog, ident,
           UnresolvedRelation(alter.tableName),
           Seq(TableChange.renameColumn(col.toArray, newName)))
 
       case alter @ AlterTableDropColumnsStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), cols) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), cols) =>
         val changes = cols.map(col => TableChange.deleteColumn(col.toArray))
         AlterTable(
           v2Catalog.asTableCatalog, ident,
@@ -810,7 +810,7 @@ class Analyzer(
           changes)
 
       case alter @ AlterTableSetPropertiesStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), props) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), props) =>
         val changes = props.map {
           case (key, value) =>
             TableChange.setProperty(key, value)
@@ -822,14 +822,14 @@ class Analyzer(
           changes.toSeq)
 
       case alter @ AlterTableUnsetPropertiesStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), keys, _) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), keys, _) =>
         AlterTable(
           v2Catalog.asTableCatalog, ident,
           UnresolvedRelation(alter.tableName),
           keys.map(key => TableChange.removeProperty(key)))
 
       case alter @ AlterTableSetLocationStatement(
-          CatalogObjectIdentifier(Some(v2Catalog), ident), newLoc) =>
+          SessionCatalogObjectIdentifier(Some(v2Catalog), ident), newLoc) =>
         AlterTable(
           v2Catalog.asTableCatalog, ident,
           UnresolvedRelation(alter.tableName),

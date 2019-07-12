@@ -1000,18 +1000,22 @@ case class LocalLimit(limitExpr: Expression, child: LogicalPlan) extends OrderPr
 /**
  * Aliased subquery.
  *
- * @param name the alias identifier for this subquery.
+ * @param identifier the alias identifier for this subquery.
  * @param child the logical plan of this subquery.
  */
 case class SubqueryAlias(
-    name: AliasIdentifier,
+    identifier: AliasIdentifier,
     child: LogicalPlan)
-  extends OrderPreservingUnaryNode {
+  extends OrderPreservingUnaryNode with NamedRelation {
 
-  def alias: String = name.identifier
+  override def name: String = identifier.identifier
+  // Data source v1 doesn't use the v2 mechanism to handle schema resolution.
+  override def skipSchemaResolution: Boolean = true
+
+  def alias: String = identifier.identifier
 
   override def output: Seq[Attribute] = {
-    val qualifierList = name.database.map(Seq(_, alias)).getOrElse(Seq(alias))
+    val qualifierList = identifier.database.map(Seq(_, alias)).getOrElse(Seq(alias))
     child.output.map(_.withQualifier(qualifierList))
   }
   override def doCanonicalize(): LogicalPlan = child.canonicalized

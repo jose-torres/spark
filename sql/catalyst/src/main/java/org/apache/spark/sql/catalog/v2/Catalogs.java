@@ -20,6 +20,7 @@ package org.apache.spark.sql.catalog.v2;
 import org.apache.spark.SparkException;
 import org.apache.spark.annotation.Private;
 import org.apache.spark.sql.internal.SQLConf;
+import org.apache.spark.sql.internal.SQLConf$;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 import org.apache.spark.util.Utils;
 
@@ -50,7 +51,12 @@ public class Catalogs {
    */
   public static CatalogPlugin load(String name, SQLConf conf)
       throws CatalogNotFoundException, SparkException {
-    String pluginClassName = conf.getConfString("spark.sql.catalog." + name, null);
+    String pluginClassName;
+    if (name.equals("session")) {
+      pluginClassName = conf.getConf(SQLConf$.MODULE$.V2_SESSION_CATALOG());
+    } else {
+      pluginClassName = conf.getConfString("spark.sql.catalog." + name, null);
+    }
     if (pluginClassName == null) {
       throw new CatalogNotFoundException(String.format(
           "Catalog '%s' plugin class not found: spark.sql.catalog.%s is not defined", name, name));

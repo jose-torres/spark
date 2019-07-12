@@ -103,6 +103,20 @@ trait LookupCatalog extends Logging {
   }
 
   /**
+   * Extract catalog and identifier from a multi-part identifier with the default catalog if needed,
+   * and the session catalog if there's no default.
+   */
+  object SessionCatalogObjectIdentifier {
+    def unapply(parts: Seq[String]): Some[CatalogObjectIdentifier] = parts match {
+      case CatalogAndIdentifier(maybeCatalog, nameParts) =>
+        Some((
+          maybeCatalog.orElse(defaultCatalog).orElse(sessionCatalog),
+          Identifier.of(nameParts.init.toArray, nameParts.last)
+        ))
+    }
+  }
+
+  /**
    * Extract legacy table identifier from a multi-part identifier.
    *
    * For legacy support only. Please use [[CatalogObjectIdentifier]] instead on DSv2 code paths.
