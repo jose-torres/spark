@@ -20,6 +20,7 @@ package org.apache.spark.sql
 import java.util.{Locale, Properties, UUID}
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 import org.apache.spark.annotation.Stable
 import org.apache.spark.sql.catalog.v2.{CatalogPlugin, Identifier, TableCatalog}
@@ -40,6 +41,7 @@ import org.apache.spark.sql.sources.v2.TableCapability._
 import org.apache.spark.sql.sources.v2.internal.UnresolvedTable
 import org.apache.spark.sql.types.{IntegerType, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+
 
 /**
  * Interface used to write a [[Dataset]] to external storage systems (e.g. file systems,
@@ -253,10 +255,10 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
 
     val maybeV2Provider = lookupV2Provider()
     if (maybeV2Provider.isDefined) {
-      if (partitioningColumns.nonEmpty) {
+      /* if (partitioningColumns.nonEmpty) {
         throw new AnalysisException(
           "Cannot write data to TableProvider implementation if partition columns are specified.")
-      }
+      } */
 
       val provider = maybeV2Provider.get
       val sessionOptions = DataSourceV2Utils.extractSessionConfigs(
@@ -265,7 +267,16 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
       val dsOptions = new CaseInsensitiveStringMap(options.asJava)
 
       import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Implicits._
-      provider.getTable(dsOptions) match {
+      val partitioning: Array[Transform] = {
+        val partitions = new mutable.ArrayBuffer[Transform]()
+
+        partitioningColumns.getOrElse(Seq()).foreach { col =>
+          partitions += LogicalExpressions.identity(col)
+        }
+
+        partitions.toArray
+      }
+      provider.getTable(dsOptions, df.schema, partitioning) match {
         case table: SupportsWrite if table.supports(BATCH_WRITE) =>
           lazy val relation = DataSourceV2Relation.create(table, dsOptions)
           modeForDSV2 match {
